@@ -4,7 +4,9 @@ import type {
   AppSettings,
   BootstrapData,
   JsonDocument,
-  RecentDocument
+  RecentDocument,
+  RecentStream,
+  StreamSnapshot
 } from "./types";
 
 export function errorMessage(error: unknown): string {
@@ -56,5 +58,36 @@ export const api = {
       filters: [{ name: "JSON", extensions: ["json"] }]
     });
     return typeof result === "string" ? result : null;
+  },
+
+  async pickStreamFile(): Promise<string | null> {
+    const result = await open({
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: "JSON Lines and zstd", extensions: ["jsonl", "zstd", "zst"] }
+      ]
+    });
+    return typeof result === "string" ? result : null;
+  },
+
+  listRecentStreams(): Promise<RecentStream[]> {
+    return invoke<RecentStream[]>("list_recent_streams");
+  },
+
+  openStream(path: string): Promise<StreamSnapshot> {
+    return invoke<StreamSnapshot>("open_stream", { path });
+  },
+
+  startStreamFollow(path: string): Promise<void> {
+    return invoke("start_stream_follow", { path });
+  },
+
+  stopStreamFollow(path: string): Promise<void> {
+    return invoke("stop_stream_follow", { path });
+  },
+
+  removeRecentStream(path: string): Promise<RecentStream[]> {
+    return invoke<RecentStream[]>("remove_recent_stream", { path });
   }
 };

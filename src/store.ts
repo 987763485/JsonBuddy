@@ -7,6 +7,7 @@ import type {
   JsonView,
   Page,
   RecentDocument,
+  RecentStream,
   ToastKind,
   ToastMessage
 } from "./types";
@@ -20,6 +21,7 @@ interface AppStore {
   settings: AppSettings;
   dataRoot: string;
   recents: RecentDocument[];
+  streamRecents: RecentStream[];
   page: Page;
   activeDoc: JsonDocument | null;
   text: string;
@@ -34,11 +36,13 @@ interface AppStore {
   notify: (kind: ToastKind, message: string, detail?: string) => void;
   dismissToast: () => void;
   refreshRecents: () => Promise<void>;
+  refreshStreamRecents: () => Promise<void>;
   createDocument: () => Promise<void>;
   pickAndOpen: () => Promise<void>;
   openPath: (path: string) => Promise<void>;
   saveActive: () => Promise<void>;
   removeRecent: (path: string) => Promise<void>;
+  removeStreamRecent: (path: string) => Promise<void>;
   updateSettings: (settings: AppSettings) => Promise<boolean>;
   setTheme: (theme: AppSettings["theme"]) => Promise<void>;
 }
@@ -67,6 +71,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   dataRoot: "",
   recents: [],
+  streamRecents: [],
   page: "json",
   activeDoc: null,
   text: "",
@@ -83,7 +88,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         busy: false,
         settings: data.settings,
         dataRoot: data.dataRoot,
-        recents: data.recents
+        recents: data.recents,
+        streamRecents: data.streams ?? []
       });
     } catch (error) {
       set({ ready: true, busy: false, error: errorMessage(error) });
@@ -117,6 +123,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   refreshRecents: async () => {
     const recents = await api.listRecentDocuments();
     set({ recents });
+  },
+
+  refreshStreamRecents: async () => {
+    const streams = await api.listRecentStreams();
+    set({ streamRecents: streams });
   },
 
   createDocument: async () => {
@@ -231,6 +242,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       state.notify(
         "success",
         translate(state.settings.language, "json.removed")
+      );
+    } catch (error) {
+      state.notify(
+        "error",
+        translate(state.settings.language, "toast.error"),
+        errorMessage(error)
+      );
+    }
+  },
+
+  removeStreamRecent: async (path) => {
+    const state = get();
+    try {
+      const streams = await api.removeRecentStream(path);
+      set({ streamRecents: streams });
+      state.notify(
+        "success",
+        translate(state.settings.language, "stream.removed")
       );
     } catch (error) {
       state.notify(

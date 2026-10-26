@@ -27,10 +27,52 @@ export interface JsonDocument {
   lines: number;
 }
 
+export interface RecentStream {
+  path: string;
+  name: string;
+  format: "jsonl" | "zstd";
+  size: number;
+  decodedSize: number;
+  lines: number;
+  openedAt: string;
+}
+
+export interface StreamEvent {
+  line: number;
+  raw: string;
+  ts?: string | null;
+  level?: string | null;
+  name?: string | null;
+}
+
+export interface StreamSnapshot {
+  path: string;
+  name: string;
+  format: "jsonl" | "zstd";
+  size: number;
+  decodedSize: number;
+  lines: number;
+  events: StreamEvent[];
+}
+
+export interface StreamLivePayload {
+  path: string;
+  events: StreamEvent[];
+  totalLines: number;
+  decodedSize: number;
+  reset: boolean;
+}
+
+export interface StreamErrorPayload {
+  path: string;
+  message: string;
+}
+
 export interface BootstrapData {
   settings: AppSettings;
   dataRoot: string;
   recents: RecentDocument[];
+  streams: RecentStream[];
 }
 
 export interface ToastMessage {

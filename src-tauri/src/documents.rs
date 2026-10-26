@@ -15,10 +15,24 @@ pub struct RecentDocument {
     pub opened_at: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentStream {
+    pub path: String,
+    pub name: String,
+    pub format: String,
+    pub size: u64,
+    pub decoded_size: u64,
+    pub lines: u64,
+    pub opened_at: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RecentStore {
     pub documents: Vec<RecentDocument>,
+    #[serde(default)]
+    pub streams: Vec<RecentStream>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -104,6 +118,17 @@ pub fn record_recent(store: &mut RecentStore, document: &JsonDocument) {
 pub fn remove_recent(store: &mut RecentStore, path: &str) -> Vec<RecentDocument> {
     store.documents.retain(|entry| entry.path != path);
     store.documents.clone()
+}
+
+pub fn record_recent_stream(store: &mut RecentStore, stream: &RecentStream) {
+    store.streams.retain(|entry| entry.path != stream.path);
+    store.streams.insert(0, stream.clone());
+    store.streams.truncate(50);
+}
+
+pub fn remove_recent_stream(store: &mut RecentStore, path: &str) -> Vec<RecentStream> {
+    store.streams.retain(|entry| entry.path != path);
+    store.streams.clone()
 }
 
 fn document_from_text(path: &Path, text: String) -> JsonDocument {

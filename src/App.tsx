@@ -7,6 +7,7 @@ import { Toast } from "./components/Toast";
 import { ComparePage } from "./pages/ComparePage";
 import { JsonToolPage } from "./pages/JsonToolPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { StreamsPage } from "./pages/StreamsPage";
 import { useAppStore } from "./store";
 import { useT } from "./useT";
 import { useResolvedTheme } from "./theme";
@@ -76,12 +77,7 @@ export default function App() {
         <main className="workspace-main">
           {page === "json" ? <JsonToolPage /> : null}
           {page === "compare" ? <ComparePage /> : null}
-          {page === "streams" ? (
-            <PlaceholderPage
-              title="placeholder.streamsTitle"
-              body="placeholder.streamsBody"
-            />
-          ) : null}
+          {page === "streams" ? <StreamsPage /> : null}
           {page === "mock" ? (
             <PlaceholderPage
               title="placeholder.mockTitle"

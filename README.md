@@ -16,9 +16,10 @@ UI 已在 `design/prototype.html` 中锁定；桌面实现使用 Tauri 2 + React
 - CodeMirror 6 JSON 编辑器，格式化、压缩、校验、保存、查找
 - TypeScript 类型生成预览
 - JSON 对比：A/B 文件选择、结构化与文本差异、忽略键顺序、变更过滤、同步滚动
+- JSON 流：JSONL / `.jsonl.zstd` / `.jsonl.zst` 最近列表、源码尾部、事件面板、级别与文本过滤、虚拟列表、跟随/暂停
 - 成功 / 失败 Toast、未保存状态与退出编辑确认
 
-JSONL 流监控、Mock 服务与审计将在后续模块继续实现。模块状态与提交节奏见 [`AGENT.md`](./AGENT.md)。
+流对话视图、Mock 服务与审计将在后续模块继续实现。模块状态与提交节奏见 [`AGENT.md`](./AGENT.md)。
 
 ## 技术栈
 

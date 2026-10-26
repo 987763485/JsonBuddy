@@ -35,6 +35,8 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
 | `src/components/JsonEditor.tsx` | CodeMirror 6 封装、JSON 高亮、查找面板 |
 | `src/components/Toast.tsx` | 成功与错误反馈 |
 | `src/pages/JsonToolPage.tsx` | 最近文件与 JSON 文档编辑 |
+| `src/pages/ComparePage.tsx` | A/B JSON 对比、差异与变更面板 |
+| `src/pages/StreamsPage.tsx` | 流最近列表、源码尾部、事件过滤、跟随与虚拟列表 |
 | `src/pages/SettingsPage.tsx` | 语言、主题、Mock 端口、HTTPS、数据目录、关于 |
 | `src/store.ts` | Zustand 应用状态与 Tauri 命令调用 |
 | `src/api.ts` | 前端到 Rust 的命令边界 |
@@ -49,8 +51,9 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
 | `src-tauri/src/lib.rs` | Tauri 插件、setup、命令注册 |
 | `src-tauri/src/data.rs` | `~/.json_buddy` 目录布局、原子级文件权限、JSON 读写 |
 | `src-tauri/src/settings.rs` | 设置结构、校验、加载与保存 |
-| `src-tauri/src/documents.rs` | 文档读取/保存/新建、最近文件存储、50 MB 限制 |
-| `src-tauri/src/state.rs` | 设置与最近文件的共享互斥状态 |
+| `src-tauri/src/documents.rs` | 文档读取/保存/新建、最近 JSON/流存储、50 MB 限制 |
+| `src-tauri/src/streams.rs` | JSONL/zstd 快照、原生文件监听、增量帧解码、实时事件 |
+| `src-tauri/src/state.rs` | 设置、最近文件与流会话的共享互斥状态 |
 
 当前命令：
 
@@ -61,6 +64,11 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
 - `open_json_document`
 - `save_json_document`
 - `remove_recent_json_document`
+- `list_recent_streams`
+- `open_stream`
+- `start_stream_follow`
+- `stop_stream_follow`
+- `remove_recent_stream`
 
 ## 数据与安全边界
 
@@ -77,7 +85,7 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
 1. **应用基础**：窗口、数据目录、设置、主题、i18n、Toast（已完成）
 2. **JSON 工作区**：最近文件、单文档编辑、校验、保存、基础代码视图（已完成）
 3. **JSON 对比**：A/B 文件、结构化与文本差异、忽略键顺序、变更过滤、同步滚动（已完成；独立搜索待补）
-4. **JSON 流**：`notify` 文件监听、增量 zstd 解码、10,000 条 / 50 MB 缓冲、虚拟列表、对话视图（待实现）
+4. **JSON 流源码监控**：`notify` 文件监听、增量 zstd 帧解码、10,000 条 / 50 MB 前端缓冲、虚拟列表、跟随/暂停、级别与文本过滤（已完成）；对话视图待实现
 5. **JSON Mock**：项目库、无状态路由、单 localhost 服务、HTTP/HTTPS、请求日志、导出（待实现）
 6. **审计**：Rust 单一策略模块、500 条内存保留、确认状态、审计面板（待实现）
 7. **树 / 表格 / 图形视图**：复用解析树与选择检查器（待实现）
