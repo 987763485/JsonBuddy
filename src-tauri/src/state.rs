@@ -1,0 +1,10 @@
+use crate::data::DataPaths;
+use crate::documents::RecentStore;
+use crate::settings::AppSettings;
+use std::sync::Mutex;
+
+pub struct AppState {
+    pub paths: DataPaths,
+    pub settings: Mutex<AppSettings>,
+    pub recents: Mutex<RecentStore>,
+}

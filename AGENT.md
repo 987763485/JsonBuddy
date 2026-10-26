@@ -1,10 +1,10 @@
-# Agent.md
+# AGENT.md
 
 ## 我在做什么
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Studio 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：搭建 Tauri 2 + React + TypeScript 工程基础，并优先完成可验证的核心业务模块。原型仅供实现参考，不是可修改的源文件。
+当前阶段：已完成 Tauri 2 + React + TypeScript 工程基础与 JSON 文档工作区，继续实现 JSON 对比、JSONL 流监控、Mock 服务与审计模块。原型仅供实现参考，不是可修改的源文件。
 
 ## 我的角色
 
@@ -28,11 +28,11 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [`Agent.md`](./Agent.md) | Agent 角色、约束、当前工作与文档索引 |
+| [`AGENT.md`](./AGENT.md) | Agent 角色、约束、当前工作与文档索引 |
 | [`design/README.md`](./design/README.md) | 产品设计、交互说明、Tauri 实现说明与 20 项 v1.0 决策 |
 | [`design/prototype.html`](./design/prototype.html) | 已锁定 UI 原型，仅作视觉与交互参考，禁止修改 |
-| [`README.md`](./README.md) | 应用工程入口与启动说明（工程建立后补充） |
-| [`docs/architecture.md`](./docs/architecture.md) | 前端、Rust 后端、数据目录与模块边界（工程建立后补充） |
+| [`README.md`](./README.md) | 应用工程入口、启动说明与数据目录 |
+| [`docs/architecture.md`](./docs/architecture.md) | 前端、Rust 后端、数据目录、模块边界与测试策略 |
 
 ## 严格性约束
 
