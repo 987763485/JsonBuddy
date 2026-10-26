@@ -84,6 +84,341 @@ if (hasTauri) {
   }
 }
 
+/* ------------------------------------------------------------
+   Custom select controls
+   Native <select> popups cannot follow the prototype styling, so
+   every select is mirrored by a styled trigger and popover while
+   the hidden select keeps prototype value/onchange semantics.
+   ------------------------------------------------------------ */
+
+interface CustomSelectBinding {
+  trigger: HTMLButtonElement;
+  label: HTMLSpanElement;
+  observer: MutationObserver;
+}
+
+interface OpenSelectState {
+  select: HTMLSelectElement;
+  trigger: HTMLButtonElement;
+  menu: HTMLDivElement;
+  active: number;
+  cleanup: () => void;
+}
+
+const customSelectBindings = new WeakMap<HTMLSelectElement, CustomSelectBinding>();
+let openSelectState: OpenSelectState | null = null;
+let selectValuePatched = false;
+
+const customSelectStyle = document.createElement("style");
+customSelectStyle.textContent = `
+  select.buddy-native-select { display: none !important; }
+  .buddy-select-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+  }
+  .buddy-select-trigger > span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .buddy-select-trigger > .i {
+    flex: 0 0 auto;
+    color: var(--ink-3);
+  }
+  .buddy-select-menu {
+    position: fixed;
+    z-index: 10000;
+    max-height: 264px;
+    overflow: auto;
+    padding: 5px;
+    background: var(--card);
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    box-shadow: var(--shadow-pop);
+  }
+  .buddy-select-menu::-webkit-scrollbar { width: 8px; }
+  .buddy-select-menu::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: 8px;
+    border: 2px solid var(--card);
+  }
+  .buddy-select-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 5px;
+    text-align: left;
+    font-size: 10.5px;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .buddy-select-option:hover,
+  .buddy-select-option.active { background: var(--hover); color: var(--ink); }
+  .buddy-select-option.on {
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    font-weight: 600;
+  }
+  [data-theme="dark"] .buddy-select-option.on { color: var(--accent); }
+  .buddy-select-option:disabled { opacity: .45; cursor: default; }
+  .buddy-select-check {
+    margin-left: auto;
+    color: var(--accent);
+    visibility: hidden;
+  }
+  .buddy-select-option.on .buddy-select-check { visibility: visible; }
+  .buddy-select-empty {
+    padding: 7px 8px;
+    font-size: 10px;
+    color: var(--ink-3);
+  }
+`;
+document.head.appendChild(customSelectStyle);
+
+function customSelectLabel(select: HTMLSelectElement): string {
+  const option = select.selectedOptions?.[0];
+  return (option?.label || option?.textContent || "").trim();
+}
+
+function syncCustomSelect(select: HTMLSelectElement): void {
+  const binding = customSelectBindings.get(select);
+  if (!binding) return;
+  const label = customSelectLabel(select);
+  binding.label.textContent = label || "—";
+  binding.trigger.title = label;
+}
+
+function closeCustomSelectMenu(restoreFocus = false): void {
+  if (!openSelectState) return;
+  const state = openSelectState;
+  openSelectState = null;
+  state.cleanup();
+  state.menu.remove();
+  state.trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus) state.trigger.focus();
+}
+
+function renderCustomSelectMenu(state: OpenSelectState): void {
+  const { select, menu, active } = state;
+  menu.innerHTML = "";
+  const options = [...select.options];
+  if (!options.length) {
+    const empty = document.createElement("div");
+    empty.className = "buddy-select-empty";
+    empty.textContent = "No options";
+    menu.appendChild(empty);
+    return;
+  }
+  options.forEach((option, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "buddy-select-option";
+    button.setAttribute("role", "option");
+    button.disabled = option.disabled;
+    if (option.selected) button.classList.add("on");
+    if (index === active) button.classList.add("active");
+    button.setAttribute("aria-selected", String(option.selected));
+    const text = document.createElement("span");
+    text.textContent = option.label || option.textContent || "";
+    button.appendChild(text);
+    const check = document.createElement("span");
+    check.className = "buddy-select-check";
+    check.textContent = "✓";
+    button.appendChild(check);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (option.disabled) return;
+      select.value = option.value;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      syncCustomSelect(select);
+      closeCustomSelectMenu(true);
+    });
+    menu.appendChild(button);
+  });
+  const activeOption = menu.querySelectorAll<HTMLButtonElement>(
+    ".buddy-select-option"
+  )[active];
+  activeOption?.scrollIntoView({ block: "nearest" });
+}
+
+function openCustomSelectMenu(
+  select: HTMLSelectElement,
+  trigger: HTMLButtonElement
+): void {
+  if (openSelectState?.select === select) {
+    closeCustomSelectMenu();
+    return;
+  }
+  closeCustomSelectMenu();
+  const options = [...select.options];
+  const initial = Math.max(0, select.selectedIndex);
+  const menu = document.createElement("div");
+  menu.className = "buddy-select-menu";
+  menu.setAttribute("role", "listbox");
+  document.body.appendChild(menu);
+  const state: OpenSelectState = {
+    select,
+    trigger,
+    menu,
+    active: initial,
+    cleanup: () => undefined
+  };
+  renderCustomSelectMenu(state);
+  const rect = trigger.getBoundingClientRect();
+  menu.style.minWidth = `${rect.width}px`;
+  const menuWidth = menu.offsetWidth;
+  menu.style.left = `${Math.max(
+    8,
+    Math.min(rect.left, window.innerWidth - menuWidth - 8)
+  )}px`;
+  const menuHeight = menu.offsetHeight;
+  const below = rect.bottom + 4;
+  menu.style.top =
+    below + menuHeight > window.innerHeight - 8 && rect.top - menuHeight - 4 > 8
+      ? `${rect.top - menuHeight - 4}px`
+      : `${below}px`;
+  trigger.setAttribute("aria-expanded", "true");
+  openSelectState = state;
+
+  const outside = (event: MouseEvent) => {
+    const target = event.target as Node;
+    if (!menu.contains(target) && !trigger.contains(target)) closeCustomSelectMenu();
+  };
+  const reposition = () => closeCustomSelectMenu();
+  const keydown = (event: KeyboardEvent) => {
+    if (openSelectState !== state) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCustomSelectMenu(true);
+      return;
+    }
+    if (event.key === "Tab") {
+      closeCustomSelectMenu();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      let next = state.active;
+      for (let step = 0; step < options.length; step += 1) {
+        next = (next + direction + options.length) % options.length;
+        if (!options[next]?.disabled) break;
+      }
+      state.active = next;
+      renderCustomSelectMenu(state);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = options[state.active];
+      if (option && !option.disabled) {
+        select.value = option.value;
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        syncCustomSelect(select);
+      }
+      closeCustomSelectMenu(true);
+    }
+  };
+  document.addEventListener("mousedown", outside, true);
+  window.addEventListener("resize", reposition);
+  window.addEventListener("scroll", reposition, true);
+  select.addEventListener("keydown", keydown);
+  trigger.addEventListener("keydown", keydown);
+  state.cleanup = () => {
+    document.removeEventListener("mousedown", outside, true);
+    window.removeEventListener("resize", reposition);
+    window.removeEventListener("scroll", reposition, true);
+    select.removeEventListener("keydown", keydown);
+    trigger.removeEventListener("keydown", keydown);
+  };
+}
+
+function installCustomSelect(select: HTMLSelectElement): void {
+  if (customSelectBindings.has(select)) return;
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = `${select.className} buddy-select-trigger`.trim();
+  trigger.setAttribute("role", "combobox");
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  const label = document.createElement("span");
+  trigger.appendChild(label);
+  const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  chevron.setAttribute("class", "i xs");
+  chevron.setAttribute("viewBox", "0 0 24 24");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", "#i-chev-down");
+  chevron.appendChild(use);
+  trigger.appendChild(chevron);
+  select.classList.add("buddy-native-select");
+  select.insertAdjacentElement("afterend", trigger);
+
+  const observer = new MutationObserver(() => syncCustomSelect(select));
+  observer.observe(select, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true
+  });
+  customSelectBindings.set(select, { trigger, label, observer });
+  syncCustomSelect(select);
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openCustomSelectMenu(select, trigger);
+  });
+  trigger.addEventListener("keydown", (event) => {
+    if (openSelectState?.select === select) return;
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openCustomSelectMenu(select, trigger);
+    }
+    if (event.key === "Escape") closeCustomSelectMenu();
+  });
+}
+
+function patchSelectValue(): void {
+  if (selectValuePatched) return;
+  selectValuePatched = true;
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLSelectElement.prototype,
+    "value"
+  );
+  if (!descriptor?.get || !descriptor.set) return;
+  Object.defineProperty(HTMLSelectElement.prototype, "value", {
+    configurable: true,
+    enumerable: descriptor.enumerable,
+    get() {
+      return descriptor.get?.call(this);
+    },
+    set(value: string) {
+      descriptor.set?.call(this, value);
+      syncCustomSelect(this as HTMLSelectElement);
+    }
+  });
+}
+
+function installCustomSelects(): void {
+  patchSelectValue();
+  document
+    .querySelectorAll<HTMLSelectElement>("select")
+    .forEach((select) => installCustomSelect(select));
+}
+
+installCustomSelects();
+
 const lightHighlight = HighlightStyle.define([
   { tag: tags.propertyName, color: "#A31515" },
   { tag: tags.string, color: "#0451A5" },
