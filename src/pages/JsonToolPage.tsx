@@ -20,6 +20,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateTypescript, rootNameForFile } from "../codegen";
 import { JsonEditor, type JsonEditorHandle } from "../components/JsonEditor";
+import { JsonTableView } from "../components/JsonTableView";
+import { JsonTreeView } from "../components/JsonTreeView";
 import { useAppStore } from "../store";
 import { useResolvedTheme } from "../theme";
 import { useT } from "../useT";
@@ -168,6 +170,19 @@ function RecentFilesPage() {
   );
 }
 
+function InvalidView({ message }: { message: string }) {
+  const t = useT();
+  return (
+    <div className="view-placeholder invalid-view">
+      <span className="empty-icon">
+        <ShieldCheck size={24} />
+      </span>
+      <h2>{t("json.validationFailed")}</h2>
+      <p>{message}</p>
+    </div>
+  );
+}
+
 function DocumentEditorPage() {
   const t = useT();
   const activeDoc = useAppStore((state) => state.activeDoc)!;
@@ -270,10 +285,45 @@ function DocumentEditorPage() {
         </div>
       );
     }
+    if (view === "tree") {
+      return parsed.ok ? (
+        <JsonTreeView value={parsed.value} sourceName={activeDoc.name} />
+      ) : (
+        <InvalidView message={parsed.error} />
+      );
+    }
+    if (view === "table") {
+      return parsed.ok ? (
+        <JsonTableView value={parsed.value} sourceName={activeDoc.name} />
+      ) : (
+        <InvalidView message={parsed.error} />
+      );
+    }
+    if (view === "split") {
+      return (
+        <div className="split-workspace">
+          <div className="split-pane">
+            <JsonEditor
+              ref={editorRef}
+              value={text}
+              dark={dark}
+              onChange={setText}
+            />
+          </div>
+          <div className="split-pane">
+            {parsed.ok ? (
+              <JsonTreeView value={parsed.value} sourceName={activeDoc.name} />
+            ) : (
+              <InvalidView message={parsed.error} />
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="view-placeholder">
         <span className="empty-icon">
-          <ListTree size={24} />
+          <Network size={24} />
         </span>
         <h2>{t(`json.view.${view}` as MessageKey)}</h2>
         <p>{t("json.viewSoon")}</p>

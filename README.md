@@ -15,6 +15,7 @@ UI 已在 `design/prototype.html` 中锁定；桌面实现使用 Tauri 2 + React
 - JSON 最近文件列表、搜索、新建、打开、移除
 - CodeMirror 6 JSON 编辑器，格式化、压缩、校验、保存、查找
 - TypeScript 类型生成预览
+- JSON 树视图、表格视图与分栏视图
 - JSON 对比：A/B 文件选择、结构化与文本差异、忽略键顺序、变更过滤、同步滚动
 - JSON 流：JSONL / `.jsonl.zstd` / `.jsonl.zst` 最近列表、源码尾部、事件面板、级别与文本过滤、虚拟列表、跟随/暂停
 - 成功 / 失败 Toast、未保存状态与退出编辑确认
