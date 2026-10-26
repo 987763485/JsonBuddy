@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JSON Studio — UI Prototype</title>
+  <title>JSON Buddy — UI Prototype</title>
   <style>
     /* ============================================================
      TOKENS
@@ -872,7 +872,7 @@
       margin-left: auto;
       display: flex;
       align-items: center;
-      gap: 1px;
+      gap: 8px;
       padding: 0 7px;
     }
 
@@ -1901,7 +1901,7 @@
       padding: 3px 0 5px;
     }
 
-    .table-col-group + .table-col-group {
+    .table-col-group+.table-col-group {
       border-top: 1px solid var(--line);
       margin-top: 3px;
       padding-top: 7px;
@@ -3877,7 +3877,7 @@
       display: flex;
       align-items: center;
       gap: 7px;
-      padding: 0 11px;
+      padding: 0 14px;
       background: var(--chrome);
       border-bottom: 1px solid var(--line);
       user-select: none;
@@ -4505,7 +4505,7 @@
     }
 
     .chat-head {
-      flex: 0 0 43px;
+      flex: 0 0 37px;
       display: flex;
       align-items: center;
       gap: 7px;
@@ -5119,7 +5119,7 @@
     }
 
     .chat-side {
-      flex: 0 0 360px;
+      flex: 0 0 400px;
       min-width: 0;
       display: flex;
       flex-direction: column;
@@ -9269,7 +9269,7 @@
           <span class="brand-mark"><svg class="i" viewBox="0 0 24 24">
               <use href="#i-braces" />
             </svg></span>
-          <span class="brand-name">JSON Studio</span>
+          <span class="brand-name">JSON Buddy</span>
         </div>
         <div class="menubar">
           <button class="menu-btn" id="fileMenuBtn" onclick="toggleFileMenu(event)">
@@ -9305,9 +9305,9 @@
             </button>
 
             <div class="fm-label">Recent</div>
-          <div id="fileMenuJsonRecents"></div>
-          <div id="fileMenuStreamRecents"></div>
-          <div class="fm-sep"></div>
+            <div id="fileMenuJsonRecents"></div>
+            <div id="fileMenuStreamRecents"></div>
+            <div class="fm-sep"></div>
             <button class="fm-item" onclick="closeFileMenu(); openSettings()">
               <svg class="i sm" viewBox="0 0 24 24">
                 <use href="#i-settings" />
@@ -9546,7 +9546,8 @@
                   </svg><span class="file-name">Open file…</span></button>
               </div>
             </div>
-            <button class="tbtn icon-only" title="Swap sides" onclick="swapCompareSides()"><svg class="i sm" viewBox="0 0 24 24">
+            <button class="tbtn icon-only" title="Swap sides" onclick="swapCompareSides()"><svg class="i sm"
+                viewBox="0 0 24 24">
                 <use href="#i-swap" />
               </svg></button>
             <div class="cmp-file-wrap">
@@ -9601,7 +9602,8 @@
           </div>
 
           <div class="tool-right">
-            <button class="keyorder" id="cmpKeyOrderBtn" onclick="toggleCompareKeyOrder(this)" aria-pressed="true"><span class="switch on"></span>Ignore key order</button>
+            <button class="keyorder" id="cmpKeyOrderBtn" onclick="toggleCompareKeyOrder(this)" aria-pressed="true"><span
+                class="switch on"></span>Ignore key order</button>
             <span class="diff-pill" id="cmpToolbarDiff"><svg class="i" viewBox="0 0 24 24">
                 <use href="#i-alert" />
               </svg><span id="cmpToolbarDiffText">9 differences</span></span>
@@ -9653,7 +9655,9 @@
               <svg class="i sm" viewBox="0 0 24 24">
                 <use href="#i-search" />
               </svg>
-              <input type="text" id="monitorFilter" placeholder="Filter events" aria-label="Filter events" oninput="applyMonitorFilter()" onkeydown="if(event.key==='Escape'){this.value='';applyMonitorFilter();}" />
+              <input type="text" id="monitorFilter" placeholder="Filter events" aria-label="Filter events"
+                oninput="applyMonitorFilter()"
+                onkeydown="if(event.key==='Escape'){this.value='';applyMonitorFilter();}" />
             </label>
             <button class="tbtn" id="pauseBtn" onclick="toggleMonitorPause()"><svg class="i sm" viewBox="0 0 24 24">
                 <use href="#i-pause" />
@@ -9693,7 +9697,8 @@
               <svg class="i sm" viewBox="0 0 24 24">
                 <use href="#i-search" />
               </svg>
-              <input id="monitorRecentsSearch" type="text" placeholder="Search files" aria-label="Search files" oninput="renderMonitorRecents(this.value)" />
+              <input id="monitorRecentsSearch" type="text" placeholder="Search files" aria-label="Search files"
+                oninput="renderMonitorRecents(this.value)" />
             </label>
             <button class="btn primary" onclick="openMonitorFileDialog()" style="height:30px;font-size:10.5px"><svg
                 class="i xs" viewBox="0 0 24 24">
@@ -9754,8 +9759,8 @@
               <svg class="i sm" viewBox="0 0 24 24">
                 <use href="#i-search" />
               </svg>
-              <input type="text" placeholder="Search projects" aria-label="Search projects" id="mockProjectsSearch" oninput="renderMockProjects(this.value)"
-                data-i18n-placeholder="mock.searchProjects" />
+              <input type="text" placeholder="Search projects" aria-label="Search projects" id="mockProjectsSearch"
+                oninput="renderMockProjects(this.value)" data-i18n-placeholder="mock.searchProjects" />
             </label>
             <button class="btn primary" onclick="openNewMockProject()" style="height:30px;font-size:10.5px"><svg
                 class="i xs" viewBox="0 0 24 24">
@@ -9778,29 +9783,36 @@
           <!-- Canvas -->
           <section class="canvas" aria-label="JSON graph">
             <div class="canvas-toolbar">
-              <button class="cv-btn" id="graphZoomOut" title="Zoom out" onclick="zoomGraph(-0.1)"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-btn" id="graphZoomOut" title="Zoom out" onclick="zoomGraph(-0.1)"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-minus" />
                 </svg></button>
               <span class="cv-btn zoom-label" id="graphZoomLabel">100%</span>
-              <button class="cv-btn" id="graphZoomIn" title="Zoom in" onclick="zoomGraph(0.1)"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-btn" id="graphZoomIn" title="Zoom in" onclick="zoomGraph(0.1)"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-plus" />
                 </svg></button>
               <span class="cv-sep"></span>
-              <button class="cv-btn" id="graphFitBtn" title="Fit to view" onclick="fitGraphToView()"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-btn" id="graphFitBtn" title="Fit to view" onclick="fitGraphToView()"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-fit" />
                 </svg></button>
-              <button class="cv-btn" id="graphLockBtn" title="Lock layout" onclick="toggleGraphLock()"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-btn" id="graphLockBtn" title="Lock layout" onclick="toggleGraphLock()"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-lock" />
                 </svg></button>
             </div>
 
             <div class="canvas-right-tools">
-              <button class="cv-pill" id="graphLayoutBtn" onclick="toggleGraphLayout()"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-pill" id="graphLayoutBtn" onclick="toggleGraphLayout()"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-layout" />
-                </svg><span id="graphLayoutLabel">Horizontal</span><svg class="i xs" viewBox="0 0 24 24" style="opacity:.6">
+                </svg><span id="graphLayoutLabel">Horizontal</span><svg class="i xs" viewBox="0 0 24 24"
+                  style="opacity:.6">
                   <use href="#i-chev-down" />
                 </svg></button>
-              <button class="cv-pill" id="graphSnapBtn" onclick="toggleGraphSnap()"><svg class="i xs" viewBox="0 0 24 24">
+              <button class="cv-pill" id="graphSnapBtn" onclick="toggleGraphSnap()"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-grid" />
                 </svg>Snap</button>
             </div>
@@ -9931,10 +9943,12 @@
                   <svg class="i xs" viewBox="0 0 24 24">
                     <use href="#i-search" />
                   </svg>
-                  <input id="tableRowFilter" type="text" placeholder="Filter rows…" aria-label="Filter rows" oninput="filterTableRows(this.value)" />
+                  <input id="tableRowFilter" type="text" placeholder="Filter rows…" aria-label="Filter rows"
+                    oninput="filterTableRows(this.value)" />
                 </label>
                 <div class="table-col-wrap">
-                  <button class="cv-pill" id="tableColumnsBtn" onclick="toggleTableColumns(event)"><svg class="i xs" viewBox="0 0 24 24">
+                  <button class="cv-pill" id="tableColumnsBtn" onclick="toggleTableColumns(event)"><svg class="i xs"
+                      viewBox="0 0 24 24">
                       <use href="#i-grid" />
                     </svg>Columns<svg class="i xs" viewBox="0 0 24 24" style="opacity:.6">
                       <use href="#i-chev-down" />
@@ -10069,7 +10083,9 @@
                     <button class="insp-btn" onclick="copyInspectorPath()"><svg class="i xs" viewBox="0 0 24 24">
                         <use href="#i-copy" />
                       </svg>Copy path</button>
-                    <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>Reveal in source</button>
+                    <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24">
+                        <use href="#i-code" />
+                      </svg>Reveal in source</button>
                   </div>
                 </div>
 
@@ -10154,9 +10170,12 @@
                 <span class="kbd" style="border:0;background:transparent;padding:0">⌘F</span>
               </div>
               <div class="sp-filters">
-                <button class="chip on" data-search-filter="all" onclick="setJsonSearchFilter('all', this)">All <b id="spAllCount">0</b></button>
-                <button class="chip" data-search-filter="key" onclick="setJsonSearchFilter('key', this)">Keys <b id="spKeyCount">0</b></button>
-                <button class="chip" data-search-filter="value" onclick="setJsonSearchFilter('value', this)">Values <b id="spValueCount">0</b></button>
+                <button class="chip on" data-search-filter="all" onclick="setJsonSearchFilter('all', this)">All <b
+                    id="spAllCount">0</b></button>
+                <button class="chip" data-search-filter="key" onclick="setJsonSearchFilter('key', this)">Keys <b
+                    id="spKeyCount">0</b></button>
+                <button class="chip" data-search-filter="value" onclick="setJsonSearchFilter('value', this)">Values <b
+                    id="spValueCount">0</b></button>
               </div>
               <div class="results" id="spResults"></div>
               <div class="sp-foot">
@@ -10206,10 +10225,12 @@
                       viewBox="0 0 24 24">
                       <use href="#i-search" />
                     </svg></button>
-                  <button class="pane-btn" id="cmpFoldA" title="Fold all" onclick="toggleCompareFold()"><svg class="i sm" viewBox="0 0 24 24">
+                  <button class="pane-btn" id="cmpFoldA" title="Fold all" onclick="toggleCompareFold()"><svg
+                      class="i sm" viewBox="0 0 24 24">
                       <use href="#i-fold" />
                     </svg></button>
-                  <button class="pane-btn" id="cmpWrapA" title="Word wrap" onclick="toggleCompareWrap()"><svg class="i sm" viewBox="0 0 24 24">
+                  <button class="pane-btn" id="cmpWrapA" title="Word wrap" onclick="toggleCompareWrap()"><svg
+                      class="i sm" viewBox="0 0 24 24">
                       <use href="#i-wrap" />
                     </svg></button>
                 </div>
@@ -10251,10 +10272,12 @@
                       viewBox="0 0 24 24">
                       <use href="#i-search" />
                     </svg></button>
-                  <button class="pane-btn" id="cmpFoldB" title="Fold all" onclick="toggleCompareFold()"><svg class="i sm" viewBox="0 0 24 24">
+                  <button class="pane-btn" id="cmpFoldB" title="Fold all" onclick="toggleCompareFold()"><svg
+                      class="i sm" viewBox="0 0 24 24">
                       <use href="#i-fold" />
                     </svg></button>
-                  <button class="pane-btn" id="cmpWrapB" title="Word wrap" onclick="toggleCompareWrap()"><svg class="i sm" viewBox="0 0 24 24">
+                  <button class="pane-btn" id="cmpWrapB" title="Word wrap" onclick="toggleCompareWrap()"><svg
+                      class="i sm" viewBox="0 0 24 24">
                       <use href="#i-wrap" />
                     </svg></button>
                 </div>
@@ -10290,10 +10313,14 @@
                 <span class="spacer"></span>
               </div>
               <div class="changes-filters">
-                <button class="chip on" data-change-filter="all" onclick="setCompareChangeFilter('all', this)">All <b id="changesAllCount">9</b></button>
-                <button class="chip" data-change-filter="mod" onclick="setCompareChangeFilter('mod', this)">Modified <b id="changesModCount">7</b></button>
-                <button class="chip" data-change-filter="add" onclick="setCompareChangeFilter('add', this)">Added <b id="changesAddCount">1</b></button>
-                <button class="chip" data-change-filter="rem" onclick="setCompareChangeFilter('rem', this)">Removed <b id="changesRemCount">1</b></button>
+                <button class="chip on" data-change-filter="all" onclick="setCompareChangeFilter('all', this)">All <b
+                    id="changesAllCount">9</b></button>
+                <button class="chip" data-change-filter="mod" onclick="setCompareChangeFilter('mod', this)">Modified <b
+                    id="changesModCount">7</b></button>
+                <button class="chip" data-change-filter="add" onclick="setCompareChangeFilter('add', this)">Added <b
+                    id="changesAddCount">1</b></button>
+                <button class="chip" data-change-filter="rem" onclick="setCompareChangeFilter('rem', this)">Removed <b
+                    id="changesRemCount">1</b></button>
               </div>
               <div class="change-list" id="changeList" tabindex="0" onkeydown="onCompareChangesKey(event)"></div>
               <div class="changes-foot">
@@ -10315,10 +10342,11 @@
                 <span class="live-dot pulse live-only"></span>
                 <span class="stream-meta" id="srcMeta">12,480 lines · 10.8 MB decoded</span>
                 <div class="pane-actions">
-                  <button class="pane-btn" id="monitorWrapBtn" title="Word wrap" onclick="toggleMonitorWrap()"><svg class="i sm" viewBox="0 0 24 24">
-                      <use href="#i-wrap" />
+                  <button class="pane-btn" title="Search messages"><svg class="i sm" viewBox="0 0 24 24">
+                      <use href="#i-search" />
                     </svg></button>
-                  <button class="pane-btn" title="Jump to live" onclick="jumpToLive()"><svg class="i sm" viewBox="0 0 24 24">
+                  <button class="pane-btn" title="Jump to live" onclick="jumpToLive()"><svg class="i sm"
+                      viewBox="0 0 24 24">
                       <use href="#i-arrow-right" />
                     </svg></button>
                 </div>
@@ -10376,11 +10404,16 @@
                 </div>
 
                 <div class="live-filters">
-                  <button class="chip on" data-monitor-level="all" onclick="setMonitorLevel('all', this)">All <b id="filterAll">12.4k</b></button>
-                  <button class="chip" data-monitor-level="info" onclick="setMonitorLevel('info', this)">Info <b id="filterInfo">9.9k</b></button>
-                  <button class="chip" data-monitor-level="debug" onclick="setMonitorLevel('debug', this)">Debug <b id="filterDebug">2.1k</b></button>
-                  <button class="chip" data-monitor-level="warn" onclick="setMonitorLevel('warn', this)">Warn <b id="filterWarn">412</b></button>
-                  <button class="chip" data-monitor-level="error" onclick="setMonitorLevel('error', this)">Error <b id="filterError">58</b></button>
+                  <button class="chip on" data-monitor-level="all" onclick="setMonitorLevel('all', this)">All <b
+                      id="filterAll">12.4k</b></button>
+                  <button class="chip" data-monitor-level="info" onclick="setMonitorLevel('info', this)">Info <b
+                      id="filterInfo">9.9k</b></button>
+                  <button class="chip" data-monitor-level="debug" onclick="setMonitorLevel('debug', this)">Debug <b
+                      id="filterDebug">2.1k</b></button>
+                  <button class="chip" data-monitor-level="warn" onclick="setMonitorLevel('warn', this)">Warn <b
+                      id="filterWarn">412</b></button>
+                  <button class="chip" data-monitor-level="error" onclick="setMonitorLevel('error', this)">Error <b
+                      id="filterError">58</b></button>
                 </div>
 
                 <div class="event-list">
@@ -10480,12 +10513,15 @@
                 <span class="model-chip" title="Models used in this session">2 models</span>
                 <span class="count" id="chatCount">4 messages</span>
                 <span class="spacer"></span>
-                <button class="pane-btn" title="Search messages"><svg class="i sm" viewBox="0 0 24 24">
-                    <use href="#i-search" />
-                  </svg></button>
-                <button class="pane-btn" title="Jump to latest"><svg class="i sm" viewBox="0 0 24 24">
-                    <use href="#i-arrow-right" />
-                  </svg></button>
+                <div class="pane-actions">
+                  <button class="pane-btn" title="Search messages"><svg class="i sm" viewBox="0 0 24 24">
+                      <use href="#i-search" />
+                    </svg></button>
+                  <button class="pane-btn" title="Jump to live" onclick="jumpToLive()"><svg class="i sm"
+                      viewBox="0 0 24 24">
+                      <use href="#i-arrow-right" />
+                    </svg></button>
+                </div>
               </div>
 
               <div class="chat-scroll" id="chatScroll">
@@ -10625,6 +10661,7 @@
                 </div>
               </div>
             </section>
+            <div class="cmp-splitter" title="Drag to resize"></div>
 
             <aside class="chat-side" aria-label="Session details">
               <div class="side-tabs">
@@ -10933,8 +10970,11 @@
               </div>
 
               <label class="mock-endpoint-filter">
-                <svg class="i xs" viewBox="0 0 24 24"><use href="#i-search"/></svg>
-                <input id="mockEndpointSearch" type="text" placeholder="Filter endpoints" aria-label="Filter endpoints" oninput="filterMockEndpoints(this.value)" />
+                <svg class="i xs" viewBox="0 0 24 24">
+                  <use href="#i-search" />
+                </svg>
+                <input id="mockEndpointSearch" type="text" placeholder="Filter endpoints" aria-label="Filter endpoints"
+                  oninput="filterMockEndpoints(this.value)" />
               </label>
               <div class="mock-endpoints" id="mockEndpoints"></div>
 
@@ -10948,7 +10988,9 @@
             <section class="mock-editor" aria-label="Endpoint editor">
               <div class="mock-endpoint-head">
                 <div class="mock-method-wrap">
-                  <button class="mock-method" id="mockMethod" onclick="toggleMockMethodMenu(event)" aria-haspopup="menu" aria-expanded="false"><span class="method get" id="mockMethodBadge">GET</span><svg class="i xs" viewBox="0 0 24 24">
+                  <button class="mock-method" id="mockMethod" onclick="toggleMockMethodMenu(event)" aria-haspopup="menu"
+                    aria-expanded="false"><span class="method get" id="mockMethodBadge">GET</span><svg class="i xs"
+                      viewBox="0 0 24 24">
                       <use href="#i-chev-down" />
                     </svg></button>
                   <div class="cmp-file-menu mock-method-menu" id="mockMethodMenu" role="menu" hidden></div>
@@ -10970,7 +11012,10 @@
                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleMockEnabled(event);}">
                   <span class="switch on" id="mockEnabledSwitch"></span><span data-i18n="mock.enabled">Enabled</span>
                 </label>
-                <button class="tbtn" id="mockTestBtn" title="Send a test request" data-i18n-title="mock.testRequest" onclick="testMockEndpoint()"><svg class="i sm" viewBox="0 0 24 24"><use href="#i-play"/></svg><span data-i18n="mock.test">Test</span></button>
+                <button class="tbtn" id="mockTestBtn" title="Send a test request" data-i18n-title="mock.testRequest"
+                  onclick="testMockEndpoint()"><svg class="i sm" viewBox="0 0 24 24">
+                    <use href="#i-play" />
+                  </svg><span data-i18n="mock.test">Test</span></button>
                 <button class="tbtn mock-delete-endpoint" id="mockDeleteEndpointBtn" title="Delete endpoint"
                   data-i18n-title="mock.deleteEndpoint" aria-label="Delete endpoint" onclick="openDeleteMockEndpoint()">
                   <svg class="i sm" viewBox="0 0 24 24">
@@ -10982,9 +11027,10 @@
               <div class="mock-tabs">
                 <button class="on" data-mock-tab="response" onclick="selectMockTab('response')"
                   data-i18n="mock.response">Response</button>
-                <button data-mock-tab="headers" onclick="selectMockTab('headers')"><span data-i18n="mock.headers">Headers</span> <span
-                    class="tab-count">2</span></button>
-                <button data-mock-tab="examples" onclick="selectMockTab('examples')" data-i18n="mock.examples">Examples</button>
+                <button data-mock-tab="headers" onclick="selectMockTab('headers')"><span
+                    data-i18n="mock.headers">Headers</span> <span class="tab-count">2</span></button>
+                <button data-mock-tab="examples" onclick="selectMockTab('examples')"
+                  data-i18n="mock.examples">Examples</button>
                 <button data-mock-tab="schema" onclick="selectMockTab('schema')" data-i18n="mock.schema">Schema</button>
                 <span class="mock-tabs-sep"></span>
                 <button data-mock-tab="typescript" onclick="selectMockTab('typescript')">TypeScript</button>
@@ -11001,7 +11047,8 @@
                 <button class="mock-gen-btn" onclick="openMockGenerate()"><svg class="i xs" viewBox="0 0 24 24">
                     <use href="#i-sparkle" />
                   </svg><span data-i18n="mock.generate">Generate</span></button>
-                <button class="pane-btn" id="mockFormatBtn" title="Format JSON" onclick="formatMockCode()"><svg class="i sm" viewBox="0 0 24 24">
+                <button class="pane-btn" id="mockFormatBtn" title="Format JSON" onclick="formatMockCode()"><svg
+                    class="i sm" viewBox="0 0 24 24">
                     <use href="#i-wand" />
                   </svg></button>
                 <button class="pane-btn" title="Copy code" onclick="copyMockCode()"><svg class="i sm"
@@ -11208,7 +11255,8 @@
           <svg class="i" viewBox="0 0 24 24">
             <use href="#i-search" />
           </svg>
-          <input id="cmdInput" placeholder="Type a command or search…" autocomplete="off" onkeydown="onCommandKey(event)" />
+          <input id="cmdInput" placeholder="Type a command or search…" autocomplete="off"
+            onkeydown="onCommandKey(event)" />
           <span class="kbd">esc</span>
         </div>
         <div class="cmd-group">
@@ -11261,7 +11309,7 @@
           <span><span class="kbd">esc</span>Close</span>
           <span class="right"><svg class="i xs" viewBox="0 0 24 24">
               <use href="#i-command" />
-            </svg>JSON Studio</span>
+            </svg>JSON Buddy</span>
         </div>
       </div>
     </div>
@@ -11299,8 +11347,8 @@
         </div>
         <input type="file" id="importFileInput" class="file-input-hidden" onchange="onImportFileSelected(event)" />
         <div class="import-foot">
-          <button class="check on" id="importReplaceCheck" onclick="this.classList.toggle('on')"><span class="box"><svg class="i"
-                viewBox="0 0 24 24" style="width:9px;height:9px;stroke-width:3">
+          <button class="check on" id="importReplaceCheck" onclick="this.classList.toggle('on')"><span class="box"><svg
+                class="i" viewBox="0 0 24 24" style="width:9px;height:9px;stroke-width:3">
                 <use href="#i-check" />
               </svg></span>Replace current document</button>
           <span class="spacer"></span>
@@ -11508,7 +11556,7 @@
                   <use href="#i-braces" />
                 </svg></span>
               <div class="help-brand-copy">
-                <b>JSON Studio</b>
+                <b>JSON Buddy</b>
                 <small data-i18n="help.tagline">Local JSON editor, visualizer and mock server.</small>
               </div>
               <span class="help-version-chip">v1.0.0</span>
@@ -11681,22 +11729,26 @@
             </button>
           </div>
           <div class="mock-export-options">
-            <button class="check on" id="mockExportAll" onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
+            <button class="check on" id="mockExportAll"
+              onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
                   viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>All endpoints</button>
-            <button class="check on" id="mockExportExamples" onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
+            <button class="check on" id="mockExportExamples"
+              onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
                   viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Include examples</button>
-            <button class="check on" id="mockExportPretty" onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
+            <button class="check on" id="mockExportPretty"
+              onclick="this.classList.toggle('on'); renderMockExportPreview()"><span class="box"><svg class="i"
                   viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Pretty print</button>
           </div>
           <div class="mock-preview">
             <div class="mock-preview-head"><span id="mockExportFile">movies-api.schema.json</span><span
-                class="spacer"></span><button class="pane-btn" title="Copy" onclick="copyMockExport()"><svg class="i xs" viewBox="0 0 24 24">
+                class="spacer"></span><button class="pane-btn" title="Copy" onclick="copyMockExport()"><svg class="i xs"
+                  viewBox="0 0 24 24">
                   <use href="#i-copy" />
                 </svg></button></div>
             <pre
@@ -11777,20 +11829,21 @@
           </div>
 
           <div class="gen-toggles">
-            <button class="check on" data-gen-option="realistic" onclick="this.classList.toggle('on'); updateGenUI()"><span class="box"><svg class="i"
-                  viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
+            <button class="check on" data-gen-option="realistic"
+              onclick="this.classList.toggle('on'); updateGenUI()"><span class="box"><svg class="i" viewBox="0 0 24 24"
+                  style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Realistic values</button>
-            <button class="check on" data-gen-option="unique" onclick="this.classList.toggle('on'); updateGenUI()"><span class="box"><svg class="i"
-                  viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
+            <button class="check on" data-gen-option="unique" onclick="this.classList.toggle('on'); updateGenUI()"><span
+                class="box"><svg class="i" viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Unique IDs</button>
-            <button class="check on" data-gen-option="vary" onclick="this.classList.toggle('on'); updateGenUI()"><span class="box"><svg class="i"
-                  viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
+            <button class="check on" data-gen-option="vary" onclick="this.classList.toggle('on'); updateGenUI()"><span
+                class="box"><svg class="i" viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Vary nested arrays</button>
-            <button class="check" data-gen-option="nulls" onclick="this.classList.toggle('on'); updateGenUI()"><span class="box"><svg class="i"
-                  viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
+            <button class="check" data-gen-option="nulls" onclick="this.classList.toggle('on'); updateGenUI()"><span
+                class="box"><svg class="i" viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3">
                   <use href="#i-check" />
                 </svg></span>Include nulls</button>
           </div>
@@ -11971,13 +12024,13 @@
     <!-- ======================= ABOUT / HELP ======================= -->
     <div class="overlay" id="overlayHelp" hidden onclick="overlayClick(event,'help')">
       <div class="scrim"></div>
-      <div class="modal help-modal" role="dialog" aria-label="About JSON Studio">
+      <div class="modal help-modal" role="dialog" aria-label="About JSON Buddy">
         <div class="mock-modal-head">
           <span class="mock-modal-icon"><svg class="i lg" viewBox="0 0 24 24">
               <use href="#i-help" />
             </svg></span>
           <div>
-            <h2 data-i18n="help.title">About JSON Studio</h2>
+            <h2 data-i18n="help.title">About JSON Buddy</h2>
             <p data-i18n="help.subtitle">A local JSON editor, visualizer and mock server.</p>
           </div>
           <button class="close" onclick="closeHelp()" title="Close" data-i18n-title="common.close"><svg class="i sm"
@@ -11991,7 +12044,7 @@
                 <use href="#i-braces" />
               </svg></span>
             <div class="help-brand-copy">
-              <b>JSON Studio</b>
+              <b>JSON Buddy</b>
               <small data-i18n="help.tagline">Local JSON editor, visualizer and mock server.</small>
             </div>
             <span class="help-version-chip">v1.0.0</span>
@@ -12011,7 +12064,7 @@
             <button class="btn ghost" id="helpCheckBtn" onclick="checkForUpdates()" data-i18n="help.checkUpdates">Check
               for updates</button>
           </div>
-          <div class="help-copyright" data-i18n="help.copyright">Copyright © 2026 JSON Studio</div>
+          <div class="help-copyright" data-i18n="help.copyright">Copyright © 2026 JSON Buddy</div>
         </div>
         <div class="settings-foot">
           <button class="btn primary" onclick="closeHelp()" data-i18n="help.close">Close</button>
@@ -12095,7 +12148,7 @@
         'settings.invalidPortDetail': 'Use a port between 1024 and 65535.',
         'settings.mountEmpty': 'No mock projects yet.',
         'help.about': 'About',
-        'help.title': 'About JSON Studio',
+        'help.title': 'About JSON Buddy',
         'help.subtitle': 'A local JSON editor, visualizer and mock server.',
         'help.tagline': 'Local JSON editor, visualizer and mock server.',
         'help.version': 'Version',
@@ -12107,8 +12160,8 @@
         'help.checking': 'Checking for updates…',
         'help.checkUpdates': 'Check for updates',
         'help.close': 'Close',
-        'help.copyright': 'Copyright © 2026 JSON Studio',
-        'help.upToDateToast': 'JSON Studio is up to date',
+        'help.copyright': 'Copyright © 2026 JSON Buddy',
+        'help.upToDateToast': 'JSON Buddy is up to date',
         'mock.projectsTitle': 'Mock projects',
         'mock.projectsSubtitle': 'Local JSON APIs running on this machine.',
         'mock.searchProjects': 'Search projects',
@@ -12275,7 +12328,7 @@
         'settings.invalidPortDetail': '请输入 1024–65535 之间的端口。',
         'settings.mountEmpty': '暂无 Mock 项目。',
         'help.about': '关于',
-        'help.title': '关于 JSON Studio',
+        'help.title': '关于 JSON Buddy',
         'help.subtitle': '本地 JSON 编辑器、可视化工具与 Mock 服务。',
         'help.tagline': '本地 JSON 编辑器、可视化工具与 Mock 服务。',
         'help.version': '版本',
@@ -12287,8 +12340,8 @@
         'help.checking': '正在检查更新…',
         'help.checkUpdates': '检查更新',
         'help.close': '关闭',
-        'help.copyright': '版权所有 © 2026 JSON Studio',
-        'help.upToDateToast': 'JSON Studio 已是最新版本',
+        'help.copyright': '版权所有 © 2026 JSON Buddy',
+        'help.upToDateToast': 'JSON Buddy 已是最新版本',
         'mock.projectsTitle': 'Mock 项目',
         'mock.projectsSubtitle': '本机运行的本地 JSON API。',
         'mock.searchProjects': '搜索项目',
@@ -12783,7 +12836,7 @@
       'JSON minified': 'JSON 已压缩',
       'JSON is valid': 'JSON 校验通过',
       'Invalid JSON': 'JSON 无效',
-      'About JSON Studio': '关于 JSON Studio',
+      'About JSON Buddy': '关于 JSON Buddy',
       'Compressed': '压缩后',
       'Decoded': '解压后',
       'Ratio': '压缩比',
@@ -14075,7 +14128,7 @@ class Root {
       if (!e.target.closest('#langSelect')) document.getElementById('langMenu').classList.remove('open');
     });
 
-        const compareFileNames = { a: 'movies.json', b: 'movies.v2.json' };
+    const compareFileNames = { a: 'movies.json', b: 'movies.v2.json' };
     let comparePickSide = 'a';
     const compareSearch = {
       a: { open: false, query: '', hits: [], index: -1 },
@@ -16695,8 +16748,8 @@ class Root {
         </div>
       </div>
     `).join('') + (q && !projects.length
-      ? `<div class="mock-empty-note" style="grid-column:1/-1">No projects match this search.</div>`
-      : '') + `
+          ? `<div class="mock-empty-note" style="grid-column:1/-1">No projects match this search.</div>`
+          : '') + `
       <button class="mock-new-tile" onclick="openNewMockProject()">
         <span class="mock-plus"><svg class="i" viewBox="0 0 24 24"><use href="#i-plus"/></svg></span>
         <b>${t('mock.newProjectTile')}</b>
@@ -18581,7 +18634,7 @@ class Root {
         updateChecking = false;
         helpUpdateTimer = null;
         syncUpdateStatus();
-        showToast(t('help.upToDateToast'), 'JSON Studio 1.0.0');
+        showToast(t('help.upToDateToast'), 'JSON Buddy 1.0.0');
       }, 900);
     }
 
