@@ -4,19 +4,18 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：已完成 Tauri 2 + React + TypeScript 工程基础、JSON 文档工作区、JSON 对比与 JSON 流源码监控，继续实现流对话视图、Mock 服务与审计模块。原型仅供实现参考，不是可修改的源文件。
+当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存和 CodeMirror 编辑已接通；对比、JSON 流、Mock 与审计仍使用原型 mock，正在逐模块桥接。
 
 ## 模块进度
 
-- [x] 应用基础：Tauri 外壳、数据目录、设置、主题、i18n、Toast
-- [x] JSON 工作区：最近文件、CodeMirror 编辑器、校验/格式化/保存、TypeScript 预览
-- [x] JSON 对比：A/B 文件、结构化/文本差异、忽略键顺序、变更过滤、同步滚动
-- [x] JSON 流源码监控：`notify` 监听、增量 zstd 帧解码、10,000 条/50 MB 前端缓冲、虚拟列表、跟随/暂停、过滤
+- [x] 桌面壳：Tauri 2、锁定原型 UI、数据目录、设置、主题、i18n、Toast
+- [x] JSON 工作区桥接：最近文件、打开/新建/保存、CodeMirror 编辑、格式化/压缩/校验
+- [ ] 对比桥接：原型页面存在，数据仍为 mock
+- [ ] JSON 流桥接：Rust 后端已完成，原型页面仍为 mock
 - [ ] JSON 流对话视图：harness 事件归一化、会话卡片、工具调用
-- [ ] JSON Mock：项目库、无状态路由、localhost 服务、HTTP/HTTPS、导出
+- [ ] JSON Mock：Rust 服务与原型页面桥接
 - [ ] 审计：Rust 策略模块、保留与确认、审计面板
-- [x] 树视图 / 表格视图 / 分栏源码+树视图
-- [ ] 图形视图
+- [ ] React 参考实现中的树/表格/分栏视图尚未移植到原型 UI
 
 ## 我的角色
 

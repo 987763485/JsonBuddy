@@ -2,21 +2,25 @@
 
 ## 总览
 
-JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。UI 原型已冻结，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
+JSON Buddy 使用 Tauri 2 作为桌面外壳。界面直接加载锁定的原型 HTML/CSS，`ui/bridge.ts` 负责注入 CodeMirror、替换 mock 数据并调用 Tauri 命令；Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。UI 原型已冻结，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
 
 ```text
 ┌──────────────────────────────────────────────┐
 │ Tauri window                                 │
-│  React UI (src/)                             │
-│   ├── shell: titlebar / rail / pages         │
-│   ├── json workspace + CodeMirror            │
-│   ├── settings + i18n + theme                │
-│   └── invoke() ──────────────────┐           │
-│                                  │           │
-│  Rust backend (src-tauri/src/)   ▼           │
+│  locked prototype UI (ui/index.html)         │
+│   ├── design/prototype.html synced at build  │
+│   ├── exact markup + CSS + mock interactions │
+│   └── ui/bridge.ts ─────────────────┐        │
+│        ├── settings / language / theme        │
+│        ├── JSON recents + file dialogs        │
+│        ├── CodeMirror in #code-wrap           │
+│        └── invoke() ─────────────────┤        │
+│                                      │        │
+│  Rust backend (src-tauri/src/)       ▼        │
 │   ├── data.rs       data root + secure I/O   │
 │   ├── settings.rs   settings load/save       │
 │   ├── documents.rs  document + recent store  │
+│   ├── streams.rs    JSONL/zstd snapshots     │
 │   ├── state.rs      shared application state │
 │   └── lib.rs        Tauri commands + setup   │
 └──────────────────────────────────────────────┘
@@ -25,24 +29,18 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
       ~/.json_buddy/
 ```
 
+React 源码位于 `src/`，保留为此前业务与视图实现的参考；Tauri 构建不加载它。`npm run dev:react` 可单独运行参考实现。
+
 ## 前端结构
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/App.tsx` | 应用启动、主题/语言应用、页面切换与全局 Toast |
-| `src/components/Titlebar.tsx` | 品牌、当前模块、主题切换、帮助入口 |
-| `src/components/Rail.tsx` | JSON / 对比 / JSON 流 / Mock / 设置一级导航 |
-| `src/components/JsonEditor.tsx` | CodeMirror 6 封装、JSON 高亮、查找面板 |
-| `src/components/Toast.tsx` | 成功与错误反馈 |
-| `src/pages/JsonToolPage.tsx` | 最近文件与 JSON 文档编辑 |
-| `src/pages/ComparePage.tsx` | A/B JSON 对比、差异与变更面板 |
-| `src/pages/StreamsPage.tsx` | 流最近列表、源码尾部、事件过滤、跟随与虚拟列表 |
-| `src/pages/SettingsPage.tsx` | 语言、主题、Mock 端口、HTTPS、数据目录、关于 |
-| `src/store.ts` | Zustand 应用状态与 Tauri 命令调用 |
-| `src/api.ts` | 前端到 Rust 的命令边界 |
-| `src/i18n.ts` | 中英文共享文案目录 |
-| `src/codegen.ts` | JSON → TypeScript 类型预览 |
-| `src/theme.ts` | 浅色 / 深色 / 跟随系统解析 |
+| `design/prototype.html` | 锁定 UI 源文件，禁止修改 |
+| `scripts/sync-ui.mjs` | 把原型复制为 `ui/index.html` 并注入 bridge |
+| `ui/bridge.ts` | 原型与 Tauri 后端之间的桥接层 |
+| `ui/index.html` | 构建时生成，不进入 Git |
+| `src/` | React 参考实现，不参与 Tauri 构建 |
+| `src/types.ts` | bridge 复用的数据契约 |
 
 ## Rust 结构
 
@@ -82,13 +80,14 @@ JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Ru
 
 ## 模块边界
 
-1. **应用基础**：窗口、数据目录、设置、主题、i18n、Toast（已完成）
-2. **JSON 工作区**：最近文件、单文档编辑、校验、保存、基础代码视图（已完成）
-3. **JSON 对比**：A/B 文件、结构化与文本差异、忽略键顺序、变更过滤、同步滚动（已完成；独立搜索待补）
-4. **JSON 流源码监控**：`notify` 文件监听、增量 zstd 帧解码、10,000 条 / 50 MB 前端缓冲、虚拟列表、跟随/暂停、级别与文本过滤（已完成）；对话视图待实现
-5. **JSON Mock**：项目库、无状态路由、单 localhost 服务、HTTP/HTTPS、请求日志、导出（待实现）
-6. **审计**：Rust 单一策略模块、500 条内存保留、确认状态、审计面板（待实现）
-7. **树 / 表格 / 分栏视图**：树视图展开折叠、表格行过滤与单元格检查、源码+树分栏（已完成）；图形视图待实现
+1. **原型 UI + 桌面壳**：锁定原型 HTML/CSS、Tauri 窗口、构建同步、Toast（已完成）
+2. **设置桥接**：语言、主题、Mock 端口、HTTPS、数据目录、i18n（已完成）
+3. **JSON 工作区桥接**：最近文件、打开/新建/保存、CodeMirror 编辑、格式化/压缩/校验（已完成）
+4. **JSON 对比桥接**：原型页面与 Rust 文件读取（待桥接）
+5. **JSON 流桥接**：Rust 的 `notify` + 增量 zstd 快照/跟随已存在，需接入原型监控 UI；对话视图待实现
+6. **JSON Mock**：Rust 项目库、无状态路由、localhost 服务、HTTP/HTTPS、请求日志、导出（待实现）
+7. **审计**：Rust 单一策略模块、500 条内存保留、确认状态、审计面板（待实现）
+8. **树 / 表格 / 图形视图**：React 参考实现已有树/表格/分栏，尚未移植到原型 UI；图形待实现
 
 ## 测试策略
 

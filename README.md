@@ -2,32 +2,29 @@
 
 JSON Buddy 是一个本地优先的 JSON 桌面工作台：编辑与校验 JSON、结构化对比、监控 JSONL / `.jsonl.zstd` 流、运行本地 Mock API，并在使用过程中保持数据不离开本机。
 
-UI 已在 `design/prototype.html` 中锁定；桌面实现使用 Tauri 2 + React + TypeScript。
+UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型的 HTML/CSS，通过 `ui/bridge.ts` 注入真实编辑能力并调用 Tauri 2 Rust 后端，确保界面与原型一致。
 
 ## 当前状态
 
-已完成应用工程基础与 JSON 文档工作区：
+界面层已切换到锁定原型，并完成第一批真实数据桥接：
 
-- Tauri 2 应用外壳、原生窗口、macOS overlay 标题栏
-- 本地数据目录 `~/.json_buddy/` 初始化
-- 英文 / 简体中文界面与浅色 / 深色 / 跟随系统主题
-- 设置：语言、主题、Mock 端口、HTTPS 开关、数据目录
-- JSON 最近文件列表、搜索、新建、打开、移除
-- CodeMirror 6 JSON 编辑器，格式化、压缩、校验、保存、查找
-- TypeScript 类型生成预览
-- JSON 树视图、表格视图与分栏视图
-- JSON 对比：A/B 文件选择、结构化与文本差异、忽略键顺序、变更过滤、同步滚动
-- JSON 流：JSONL / `.jsonl.zstd` / `.jsonl.zst` 最近列表、源码尾部、事件面板、级别与文本过滤、虚拟列表、跟随/暂停
-- 成功 / 失败 Toast、未保存状态与退出编辑确认
+- Tauri 2 应用直接加载锁定原型的 HTML/CSS/DOM
+- 本地数据目录 `~/.json_buddy/` 初始化与旧目录迁移
+- 设置桥接：语言、主题、Mock 端口、HTTPS 开关持久化
+- JSON 工具桥接：最近文件、新建、打开、保存、移除
+- 在原型编辑器区域注入 CodeMirror 6，保持原型的排版与语法色
+- 格式化、压缩、校验仍由原型交互驱动，保存写入真实文件
+- 成功 / 失败 Toast 使用原型现有组件
 
-流对话视图、Mock 服务与审计将在后续模块继续实现。模块状态与提交节奏见 [`AGENT.md`](./AGENT.md)。
+对比、JSON 流、Mock 与审计页面目前仍运行原型内置 mock 数据，正在逐模块桥接到 Rust 后端。React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
 
 ## 技术栈
 
 - **桌面**：Tauri 2、Rust
-- **前端**：React 19、TypeScript、Vite 8、Zustand
-- **编辑器**：CodeMirror 6
-- **字体**：Inter、JetBrains Mono（随应用打包）
+- **界面**：锁定原型 HTML/CSS（运行时由 `scripts/sync-ui.mjs` 同步）
+- **桥接**：TypeScript、Vite 8
+- **编辑器**：CodeMirror 6（注入原型编辑区域）
+- **字体**：原型字体栈，Inter / JetBrains Mono
 - **数据**：本地 `~/.json_buddy/`，不上传网络
 
 ## 开发
@@ -43,7 +40,7 @@ npm install
 npm run tauri:dev
 ```
 
-只构建前端：
+只构建界面：
 
 ```bash
 npm run build
@@ -54,6 +51,8 @@ npm run build
 ```bash
 npm run tauri:build
 ```
+
+`npm run dev` / `npm run build` 会先把锁定原型同步为 `ui/index.html`，再构建桥接脚本。React 参考实现可通过 `npm run dev:react` 和 `npm run build:react` 单独运行，不参与桌面发布。
 
 ## 数据目录
 
