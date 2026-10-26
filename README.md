@@ -1,6 +1,6 @@
-# JSON Studio
+# JSON Buddy
 
-JSON Studio 是一个本地优先的 JSON 桌面工作台：编辑与校验 JSON、结构化对比、监控 JSONL / `.jsonl.zstd` 流、运行本地 Mock API，并在使用过程中保持数据不离开本机。
+JSON Buddy 是一个本地优先的 JSON 桌面工作台：编辑与校验 JSON、结构化对比、监控 JSONL / `.jsonl.zstd` 流、运行本地 Mock API，并在使用过程中保持数据不离开本机。
 
 UI 已在 `design/prototype.html` 中锁定；桌面实现使用 Tauri 2 + React + TypeScript。
 
@@ -9,7 +9,7 @@ UI 已在 `design/prototype.html` 中锁定；桌面实现使用 Tauri 2 + React
 已完成应用工程基础与 JSON 文档工作区：
 
 - Tauri 2 应用外壳、原生窗口、macOS overlay 标题栏
-- 本地数据目录 `~/.json_studio/` 初始化
+- 本地数据目录 `~/.json_buddy/` 初始化
 - 英文 / 简体中文界面与浅色 / 深色 / 跟随系统主题
 - 设置：语言、主题、Mock 端口、HTTPS 开关、数据目录
 - JSON 最近文件列表、搜索、新建、打开、移除
@@ -26,7 +26,7 @@ JSONL 流监控、Mock 服务与审计将在后续模块继续实现。模块状
 - **前端**：React 19、TypeScript、Vite 8、Zustand
 - **编辑器**：CodeMirror 6
 - **字体**：Inter、JetBrains Mono（随应用打包）
-- **数据**：本地 `~/.json_studio/`，不上传网络
+- **数据**：本地 `~/.json_buddy/`，不上传网络
 
 ## 开发
 
@@ -58,7 +58,7 @@ npm run tauri:build
 应用数据默认位于：
 
 ```text
-~/.json_studio/
+~/.json_buddy/
 ├── settings.json
 ├── recent.json
 ├── documents/       # 新建 JSON 文档
@@ -70,7 +70,7 @@ npm run tauri:build
 └── cache/streams/   # 流缓冲临时文件
 ```
 
-用户主动打开的外部 JSON 文件仍保存在原路径；新建文档默认写入 `documents/`。
+用户主动打开的外部 JSON 文件仍保存在原路径；新建文档默认写入 `documents/`。首次启动时若检测到旧 `~/.json_studio/` 且新目录不存在，会尝试自动迁移；迁移失败则保留旧目录并创建新目录。
 
 ## 文档
 

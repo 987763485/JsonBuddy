@@ -52,7 +52,7 @@ export function SettingsPage() {
     <section className="settings-page">
       <div className="settings-head">
         <div>
-          <span className="eyebrow">JSON Studio</span>
+          <span className="eyebrow">JSON Buddy</span>
           <h1>{t("settings.title")}</h1>
           <p>{t("settings.subtitle")}</p>
         </div>
@@ -147,7 +147,7 @@ export function SettingsPage() {
           </div>
           <code className="path-box">
             <Folder size={14} />
-            {dataRoot || "~/.json_studio"}
+            {dataRoot || "~/.json_buddy"}
           </code>
         </section>
       </div>
@@ -160,7 +160,7 @@ export function SettingsPage() {
           </span>
           <div>
             <h2>{t("settings.about")}</h2>
-            <p>JSON Studio 1.0.0 · 2026-10-26 · MIT · Tauri 2</p>
+            <p>JSON Buddy 1.0.0 · 2026-10-26 · MIT · Tauri 2</p>
           </div>
         </div>
         <div className="about-actions">

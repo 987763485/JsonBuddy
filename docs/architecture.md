@@ -2,7 +2,7 @@
 
 ## 总览
 
-JSON Studio 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。UI 原型已冻结，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
+JSON Buddy 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。UI 原型已冻结，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
 
 ```text
 ┌──────────────────────────────────────────────┐
@@ -22,7 +22,7 @@ JSON Studio 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，R
 └──────────────────────────────────────────────┘
              │
              ▼
-      ~/.json_studio/
+      ~/.json_buddy/
 ```
 
 ## 前端结构
@@ -47,7 +47,7 @@ JSON Studio 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，R
 | 路径 | 职责 |
 | --- | --- |
 | `src-tauri/src/lib.rs` | Tauri 插件、setup、命令注册 |
-| `src-tauri/src/data.rs` | `~/.json_studio` 目录布局、原子级文件权限、JSON 读写 |
+| `src-tauri/src/data.rs` | `~/.json_buddy` 目录布局、原子级文件权限、JSON 读写 |
 | `src-tauri/src/settings.rs` | 设置结构、校验、加载与保存 |
 | `src-tauri/src/documents.rs` | 文档读取/保存/新建、最近文件存储、50 MB 限制 |
 | `src-tauri/src/state.rs` | 设置与最近文件的共享互斥状态 |
@@ -64,8 +64,9 @@ JSON Studio 使用 Tauri 2 作为桌面外壳，前端为 React + TypeScript，R
 
 ## 数据与安全边界
 
-- 数据根目录固定为 `~/.json_studio/`；macOS/Linux 目录 `0700`，配置文件 `0600`，Windows 依赖用户目录 ACL。
-- 新建 JSON 默认写入 `~/.json_studio/documents/`；用户打开的外部文件在原路径保存。
+- 数据根目录固定为 `~/.json_buddy/`；macOS/Linux 目录 `0700`，配置文件 `0600`，Windows 依赖用户目录 ACL。
+- 首次启动会尝试把旧 `~/.json_studio/` 迁移到 `~/.json_buddy/`；新目录已存在或迁移失败时保留旧目录，不影响启动。
+- 新建 JSON 默认写入 `~/.json_buddy/documents/`；用户打开的外部文件在原路径保存。
 - 最近文件只记录元数据，删除最近项不会删除磁盘文件。
 - 编辑器单文件读取上限 50 MB；超过时返回明确错误。
 - 不发起非本地网络请求；Mock 服务后续只绑定 `127.0.0.1` / `::1`。

@@ -18,7 +18,22 @@ pub struct DataPaths {
 impl DataPaths {
     pub fn init() -> Result<Self, String> {
         let home = dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())?;
-        Self::from_root(home.join(".json_studio"))
+        Self::init_from_home(home)
+    }
+
+    pub fn init_from_home(home: PathBuf) -> Result<Self, String> {
+        let root = home.join(".json_buddy");
+        let legacy = home.join(".json_studio");
+        if !root.exists() && legacy.exists() {
+            if let Err(err) = fs::rename(&legacy, &root) {
+                eprintln!(
+                    "could not migrate {} to {}: {err}",
+                    legacy.display(),
+                    root.display()
+                );
+            }
+        }
+        Self::from_root(root)
     }
 
     pub fn from_root(root: PathBuf) -> Result<Self, String> {
@@ -117,7 +132,7 @@ mod tests {
     #[test]
     fn data_root_has_expected_layout() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(".json_studio");
+        let root = temp.path().join(".json_buddy");
         let paths = DataPaths::from_root(root.clone()).expect("data root");
         assert!(paths.documents.is_dir());
         assert!(paths.mock_projects.is_dir());
@@ -125,5 +140,17 @@ mod tests {
         assert!(paths.audit.is_dir());
         assert!(paths.stream_cache.is_dir());
         assert_eq!(paths.root, root);
+    }
+
+    #[test]
+    fn legacy_data_root_is_migrated_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy = temp.path().join(".json_studio");
+        fs::create_dir_all(&legacy).expect("legacy root");
+        fs::write(legacy.join("settings.json"), "{}").expect("legacy settings");
+        let paths = DataPaths::init_from_home(temp.path().to_path_buf()).expect("data root");
+        assert_eq!(paths.root, temp.path().join(".json_buddy"));
+        assert!(paths.root.join("settings.json").is_file());
+        assert!(!legacy.exists());
     }
 }

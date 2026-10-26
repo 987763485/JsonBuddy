@@ -153,5 +153,5 @@ pub fn run() {
             remove_recent_json_document
         ])
         .run(tauri::generate_context!())
-        .expect("error while running JSON Studio");
+        .expect("error while running JSON Buddy");
 }

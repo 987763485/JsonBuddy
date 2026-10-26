@@ -42,7 +42,7 @@ export default function App() {
           <i />
           <i />
         </span>
-        <span className="splash-name">JSON Studio</span>
+        <span className="splash-name">JSON Buddy</span>
         <span className="splash-detail">{t("app.loading")}</span>
       </div>
     );

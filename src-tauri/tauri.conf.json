@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JSON Studio",
+  "productName": "JSON Buddy",
   "version": "1.0.0",
-  "identifier": "dev.jsonstudio.desktop",
+  "identifier": "dev.jsonbuddy.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "JSON Studio",
+        "title": "JSON Buddy",
         "width": 1440,
         "height": 900,
         "minWidth": 1100,

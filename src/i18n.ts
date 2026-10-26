@@ -1,9 +1,9 @@
 import type { Language } from "./types";
 
 const en = {
-  "app.name": "JSON Studio",
+  "app.name": "JSON Buddy",
   "app.loading": "Preparing workspace…",
-  "app.failed": "Could not start JSON Studio",
+  "app.failed": "Could not start JSON Buddy",
   "app.retry": "Retry",
   "nav.jsonTool": "JSON tool",
   "nav.compare": "Compare",
@@ -146,9 +146,9 @@ const en = {
 export type MessageKey = keyof typeof en;
 
 const zh: Record<MessageKey, string> = {
-  "app.name": "JSON Studio",
+  "app.name": "JSON Buddy",
   "app.loading": "正在准备工作区…",
-  "app.failed": "JSON Studio 启动失败",
+  "app.failed": "JSON Buddy 启动失败",
   "app.retry": "重试",
   "nav.jsonTool": "JSON 工具",
   "nav.compare": "JSON 对比",

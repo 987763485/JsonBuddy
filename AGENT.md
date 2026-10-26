@@ -2,7 +2,7 @@
 
 ## 我在做什么
 
-我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Studio 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
+我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
 当前阶段：已完成 Tauri 2 + React + TypeScript 工程基础、JSON 文档工作区与 JSON 对比，继续实现 JSONL 流监控、Mock 服务与审计模块。原型仅供实现参考，不是可修改的源文件。
 
@@ -28,7 +28,7 @@
 - `design/prototype.html` **永久冻结**，禁止修改；UI 变更只能在 Tauri 应用代码中按既有设计语言实现。
 - `design/README.md` 是产品、交互、决策与 Tauri 实现的唯一事实来源；新增行为先更新文档或与其保持一致。
 - 不提交 `node_modules`、构建产物、`target`、`example` 或系统文件。
-- 所有用户数据默认位于 `~/.json_studio/`；新建 JSON 与 Mock 项目不写入工作区。
+- 所有用户数据默认位于 `~/.json_buddy/`；旧 `~/.json_studio/` 首次启动时尝试迁移。新建 JSON 与 Mock 项目不写入工作区。
 - 应用不发起任何非本地网络请求；Mock 服务仅监听 localhost。
 - 任何没有明显视觉结果的成功操作必须显示本地化 Toast；失败显示错误 Toast。
 - 不在修改 UI 后截图；用户自行打开原型验证。实现阶段使用自动化断言和实际运行验证。
@@ -49,7 +49,7 @@
 1. **UI 锁定**：不得修改 `design/prototype.html`；不得以“实现需要”为由回写原型。
 2. **分支策略**：功能开发在 `dev` 分支进行；`main` 只接收完成且验证过的主要合并。每个大模块完成后在 `dev` 提交。
 3. **提交信息**：只写功能、修改或修复，不包含版本号、迭代轮次或发布信息。
-4. **数据目录**：统一使用用户目录下的 `.json_studio`；不把应用级数据散落在工作区。
+4. **数据目录**：统一使用用户目录下的 `.json_buddy`；不把应用级数据散落在工作区。
 5. **安全边界**：Rust 侧执行审计、路径校验、Mock 服务绑定和文件访问；UI 不得绕过策略；v1.0 不发起非本地网络请求。
 6. **流处理**：原生 `notify` 不做轮询；zstd 增量帧解码，只有截断/轮转/错误时全量重解；内存缓冲 10,000 条或 50 MB；虚拟列表。
 7. **Mock**：v1.0 无状态；localhost + 放开 CORS + 无鉴权；HTTPS 使用应用生成证书；生成数据不持久化。
