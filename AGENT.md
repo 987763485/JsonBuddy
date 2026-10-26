@@ -4,7 +4,17 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Studio 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：已完成 Tauri 2 + React + TypeScript 工程基础与 JSON 文档工作区，继续实现 JSON 对比、JSONL 流监控、Mock 服务与审计模块。原型仅供实现参考，不是可修改的源文件。
+当前阶段：已完成 Tauri 2 + React + TypeScript 工程基础、JSON 文档工作区与 JSON 对比，继续实现 JSONL 流监控、Mock 服务与审计模块。原型仅供实现参考，不是可修改的源文件。
+
+## 模块进度
+
+- [x] 应用基础：Tauri 外壳、数据目录、设置、主题、i18n、Toast
+- [x] JSON 工作区：最近文件、CodeMirror 编辑器、校验/格式化/保存、TypeScript 预览
+- [x] JSON 对比：A/B 文件、结构化/文本差异、忽略键顺序、变更过滤、同步滚动
+- [ ] JSON 流：`notify` 监听、增量 zstd 解码、缓冲与虚拟列表、对话视图
+- [ ] JSON Mock：项目库、无状态路由、localhost 服务、HTTP/HTTPS、导出
+- [ ] 审计：Rust 策略模块、保留与确认、审计面板
+- [ ] 树视图 / 表格视图 / 图形视图
 
 ## 我的角色
 

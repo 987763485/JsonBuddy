@@ -4,6 +4,7 @@ import { PlaceholderPage } from "./components/PlaceholderPage";
 import { Rail } from "./components/Rail";
 import { Titlebar } from "./components/Titlebar";
 import { Toast } from "./components/Toast";
+import { ComparePage } from "./pages/ComparePage";
 import { JsonToolPage } from "./pages/JsonToolPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { useAppStore } from "./store";
@@ -74,12 +75,7 @@ export default function App() {
         <Rail />
         <main className="workspace-main">
           {page === "json" ? <JsonToolPage /> : null}
-          {page === "compare" ? (
-            <PlaceholderPage
-              title="placeholder.compareTitle"
-              body="placeholder.compareBody"
-            />
-          ) : null}
+          {page === "compare" ? <ComparePage /> : null}
           {page === "streams" ? (
             <PlaceholderPage
               title="placeholder.streamsTitle"
