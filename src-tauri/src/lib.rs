@@ -1,5 +1,6 @@
 mod data;
 mod documents;
+mod mock;
 mod settings;
 mod state;
 mod streams;
@@ -11,6 +12,7 @@ use documents::{
     RecentDocument, RecentStream,
 };
 use serde::Serialize;
+use mock::{MockProject, MockRequestLog, MockServerStatus, MockState};
 use settings::{load_settings, save_settings, AppSettings};
 use state::AppState;
 use std::io;
@@ -61,6 +63,7 @@ fn update_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let saved = save_settings(&state.paths.settings, &settings)?;
+    state.mock.configure(saved.mock_port, saved.mock_https);
     *state
         .settings
         .lock()
@@ -194,6 +197,54 @@ fn remove_recent_stream(
     Ok(remaining)
 }
 
+#[tauri::command]
+fn list_mock_projects(state: State<'_, AppState>) -> Result<Vec<MockProject>, String> {
+    Ok(state.mock.projects())
+}
+
+#[tauri::command]
+fn save_mock_project(
+    state: State<'_, AppState>,
+    project: MockProject,
+) -> Result<MockProject, String> {
+    state.mock.save_project(project)
+}
+
+#[tauri::command]
+fn create_mock_project(
+    state: State<'_, AppState>,
+    name: String,
+    description: String,
+    slug: String,
+) -> Result<MockProject, String> {
+    state.mock.create_project(name, description, slug)
+}
+
+#[tauri::command]
+fn delete_mock_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mock.delete_project(&id)
+}
+
+#[tauri::command]
+fn mock_server_status(state: State<'_, AppState>) -> Result<MockServerStatus, String> {
+    Ok(state.mock.status())
+}
+
+#[tauri::command]
+fn mock_request_logs(state: State<'_, AppState>) -> Result<Vec<MockRequestLog>, String> {
+    Ok(state.mock.request_logs())
+}
+
+#[tauri::command]
+fn start_mock_server(app: AppHandle, state: State<'_, AppState>) -> Result<MockServerStatus, String> {
+    state.mock.start_server(app)
+}
+
+#[tauri::command]
+fn stop_mock_server(state: State<'_, AppState>) -> Result<MockServerStatus, String> {
+    state.mock.stop_server()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -208,11 +259,14 @@ pub fn run() {
                     .map_err(io::Error::other)?;
             }
             let recents = load_recent(&paths.recent);
+            let mock = MockState::new(&paths, settings.mock_port, settings.mock_https)
+                .map_err(io::Error::other)?;
             app.manage(AppState {
                 paths,
                 settings: std::sync::Mutex::new(settings),
                 recents: std::sync::Mutex::new(recents),
                 streams: std::sync::Mutex::new(StreamManager::default()),
+                mock,
             });
             Ok(())
         })
@@ -228,7 +282,15 @@ pub fn run() {
             open_stream,
             start_stream_follow,
             stop_stream_follow,
-            remove_recent_stream
+            remove_recent_stream,
+            list_mock_projects,
+            save_mock_project,
+            create_mock_project,
+            delete_mock_project,
+            mock_server_status,
+            mock_request_logs,
+            start_mock_server,
+            stop_mock_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running JSON Buddy");

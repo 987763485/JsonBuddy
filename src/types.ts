@@ -68,6 +68,45 @@ export interface StreamErrorPayload {
   message: string;
 }
 
+export interface MockEndpoint {
+  id: string;
+  method: string;
+  path: string;
+  name: string;
+  status: number;
+  delayMs: number;
+  enabled: boolean;
+  response: unknown;
+}
+
+export interface MockProject {
+  version: number;
+  id: string;
+  name: string;
+  description: string;
+  slug: string;
+  endpoints: MockEndpoint[];
+  updatedAt: string;
+  schemaCount: number;
+}
+
+export interface MockServerStatus {
+  running: boolean;
+  port: number;
+  https: boolean;
+  url: string;
+}
+
+export interface MockRequestLog {
+  projectId: string;
+  projectName: string;
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  at: string;
+}
+
 export interface BootstrapData {
   settings: AppSettings;
   dataRoot: string;

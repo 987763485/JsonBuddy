@@ -25,6 +25,10 @@ notify = "8"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"
