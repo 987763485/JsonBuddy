@@ -42,6 +42,18 @@ if (!document.querySelector('link[rel="icon"]')) {
 }
 
 if (hasTauri) {
+  // The prototype shrinks itself with CSS zoom to fit a browser stage.
+  // In the desktop window it must render at 1:1 and fill the webview.
+  const appRoot = document.getElementById("app");
+  const originalFitStage = w.fitStage;
+  if (typeof originalFitStage === "function") {
+    window.removeEventListener("resize", originalFitStage);
+  }
+  if (appRoot) appRoot.style.zoom = "";
+  w.fitStage = () => {
+    if (appRoot) appRoot.style.zoom = "";
+  };
+
   // The prototype is a fixed 1440x900 card floating on a padded backdrop.
   // Inside the desktop window it must fill the webview edge to edge.
   const chromeStyle = document.createElement("style");
@@ -58,6 +70,7 @@ if (hasTauri) {
     #app.app {
       width: 100% !important;
       height: 100% !important;
+      zoom: 1 !important;
       border-radius: 0 !important;
       box-shadow: none !important;
     }
