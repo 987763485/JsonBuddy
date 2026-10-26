@@ -74,6 +74,9 @@ if (hasTauri) {
       border-radius: 0 !important;
       box-shadow: none !important;
     }
+    /* WebKit sizes a single auto grid row to its content and pins it to
+       the top; center that row inside the fixed-height chrome bars. */
+    .titlebar, .toolbar { align-content: center !important; }
     html.buddy-macos .titlebar { padding-left: 78px !important; }
     html.buddy-macos .traffic { display: none !important; }
   `;
