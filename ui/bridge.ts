@@ -659,6 +659,9 @@ let buddyAutosaveTimer: number | null = null;
 let buddyAutosaveFailedPath = "";
 let buddyDocumentSaveChain: Promise<unknown> = Promise.resolve();
 const highlightCompartment = new Compartment();
+const languageCompartment = new Compartment();
+const LARGE_DOCUMENT_LIMIT = 2_000_000;
+let editorLargeMode = false;
 
 function evalGlobal<T = any>(code: string): T {
   return window.eval(code) as T;
@@ -822,6 +825,7 @@ const BUDDY_TOAST_ZH: Record<string, string> = {
   "Could not acknowledge audit event": "无法确认审计事件",
   "Could not save generated code": "无法保存生成的代码",
   "Could not generate code": "无法生成代码",
+  "Large files use text comparison": "大文件将使用文本对比",
   "Nothing to export": "没有可导出内容",
   "No tabular data found.": "未找到表格数据。",
   "Could not export CSV": "无法导出 CSV",
@@ -897,7 +901,9 @@ function ensureEditor(): EditorView | null {
         doc: doc?.text ?? "",
         extensions: [
           basicSetup,
-          json(),
+          languageCompartment.of(
+            (doc?.text?.length ?? 0) > LARGE_DOCUMENT_LIMIT ? [] : json()
+          ),
           editorTheme,
           highlightCompartment.of(
             syntaxHighlighting(
@@ -940,6 +946,7 @@ function ensureEditor(): EditorView | null {
         ]
       })
     });
+    editorLargeMode = (doc?.text?.length ?? 0) > LARGE_DOCUMENT_LIMIT;
     editorDocumentText = doc?.text ?? "";
   }
   return editor;
@@ -962,11 +969,18 @@ function syncEditor(force = false): void {
     updateDocumentDirtyIndicator(doc);
   }
   if (current !== next) {
+    const largeMode = next.length > LARGE_DOCUMENT_LIMIT;
+    const languageChanged = largeMode !== editorLargeMode;
     syncing = true;
     view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: next }
+      changes: { from: 0, to: view.state.doc.length, insert: next },
+      ...(documentChanged ? { selection: { anchor: 0 } } : {}),
+      ...(languageChanged
+        ? { effects: languageCompartment.reconfigure(largeMode ? [] : json()) }
+        : {})
     });
     syncing = false;
+    editorLargeMode = largeMode;
     editorDocumentText = next;
     if (!documentChanged) {
       buddyDocumentVersion += 1;
@@ -1122,9 +1136,10 @@ function updateStatusIndentation(state: EditorState): void {
   let indented: string | null = null;
   const limit = Math.min(state.doc.lines, 5000);
   for (let lineNumber = 1; lineNumber <= limit; lineNumber += 1) {
-    const line = state.doc.line(lineNumber).text;
-    if (/^[ \t]+\S/.test(line)) {
-      indented = line;
+    const line = state.doc.line(lineNumber);
+    const sample = state.sliceDoc(line.from, Math.min(line.to, line.from + 256));
+    if (/^[ \t]+\S/.test(sample)) {
+      indented = sample;
       break;
     }
   }
@@ -1163,8 +1178,20 @@ function updateJsonEditorStatus(state: EditorState, validate: boolean): void {
     zh
       ? `第 ${line.number} 行，第 ${column} 列`
       : `Ln ${line.number}, Col ${column}`;
-  const segments = jsonPathAtCursor(state);
-  renderJsonStatusPath(segments, jsonPathText(segments));
+  if (state.doc.length > 1_000_000) {
+    renderJsonStatusPath([], "$");
+    const host = document.querySelector<HTMLElement>(
+      ".status-normal .status-path"
+    );
+    if (host) {
+      host.title = zh
+        ? "大文档仅显示根路径"
+        : "Root path only for large documents";
+    }
+  } else {
+    const segments = jsonPathAtCursor(state);
+    renderJsonStatusPath(segments, jsonPathText(segments));
+  }
   if (validate) {
     updateStatusIndentation(state);
     scheduleJsonStatusValidation(state);
@@ -1456,10 +1483,12 @@ function renderCompareMenus(): void {
 async function loadCompareFile(side: "a" | "b", path: string, name: string): Promise<void> {
   const document = await invoke<JsonDocument>("open_json_document", { path });
   let text = document.text;
-  try {
-    text = `${JSON.stringify(JSON.parse(document.text), null, 2)}\n`;
-  } catch {
-    // Compare text mode still works with invalid JSON.
+  if (text.length <= COMPARE_PRETTY_MAX_BYTES) {
+    try {
+      text = `${JSON.stringify(JSON.parse(document.text), null, 2)}\n`;
+    } catch {
+      // Compare text mode still works with invalid JSON.
+    }
   }
   evalGlobal(
     `compareDocs[${JSON.stringify(side)}] = ${JSON.stringify({
@@ -1474,6 +1503,11 @@ async function loadCompareFile(side: "a" | "b", path: string, name: string): Pro
   w.renderFileMenuJsonRecents?.();
   toast(w.t("Opened JSON file"), `${side.toUpperCase()} · ${name}`);
 }
+
+const COMPARE_PRETTY_MAX_BYTES = 400_000;
+const COMPARE_MAX_LINES = 10_000;
+const COMPARE_MAX_CHANGES = 2_000;
+const COMPARE_HIGHLIGHT_MAX_CHARS = 8_000;
 
 function patchCompareFlow(): void {
   const originalSelect = w.selectCompareFile;
@@ -1522,7 +1556,153 @@ function patchCompareFlow(): void {
     }
   };
 
+  const originalHighlightJsonLine = w.highlightJsonLine;
+  if (typeof originalHighlightJsonLine === "function") {
+    w.highlightJsonLine = (line: string) => {
+      if (line.length <= COMPARE_HIGHLIGHT_MAX_CHARS) {
+        return originalHighlightJsonLine(line);
+      }
+      const visible = line.slice(0, COMPARE_HIGHLIGHT_MAX_CHARS);
+      const note = viewLanguageIsZh()
+        ? ` …（已省略 ${line.length.toLocaleString("en-US")} 个字符的长行）`
+        : ` … (${line.length.toLocaleString("en-US")} character line truncated)`;
+      return `${w.escHtml(visible)}<span style="color:var(--ink-3)">${w.escHtml(note)}</span>`;
+    };
+  }
+
+  const originalRenderDiff = w.renderDiff;
+  const compareDocsLarge = (): boolean => {
+    const docs = evalGlobal<{ a: { text: string }; b: { text: string } }>(
+      "compareDocs"
+    );
+    return (
+      docs.a.text.length > COMPARE_PRETTY_MAX_BYTES ||
+      docs.b.text.length > COMPARE_PRETTY_MAX_BYTES
+    );
+  };
+  w.renderDiff = () => {
+    const docs = evalGlobal<{ a: { name: string; text: string }; b: { name: string; text: string } }>(
+      "compareDocs"
+    );
+    const linesA = docs.a.text.split("\n").length;
+    const linesB = docs.b.text.split("\n").length;
+    if (linesA > COMPARE_MAX_LINES || linesB > COMPARE_MAX_LINES) {
+      showCompareLimit(docs.a, docs.b, linesA, linesB);
+      return;
+    }
+    if (compareDocsLarge()) {
+      evalGlobal(`compareKind = "text"`);
+      originalRenderDiff();
+      const list = document.getElementById("changeList");
+      if (list) {
+        const note = document.createElement("div");
+        note.className = "changes-empty";
+        note.textContent = viewLanguageIsZh()
+          ? "文件较大，已使用文本对比以避免界面卡顿。"
+          : "Large files use text comparison to keep the interface responsive.";
+        list.appendChild(note);
+      }
+      return;
+    }
+    originalRenderDiff();
+  };
+
+  const originalSetCompareType = w.setCompareType;
+  if (typeof originalSetCompareType === "function") {
+    w.setCompareType = (type: string, button?: HTMLElement | null) => {
+      if (type === "structural" && compareDocsLarge()) {
+        toast("Large files use text comparison");
+        return;
+      }
+      originalSetCompareType(type, button);
+    };
+  }
+
+  const originalRenderCompareChanges = w.renderCompareChanges;
+  w.renderCompareChanges = () => {
+    const allChanges = evalGlobal<any[]>("compareChanges");
+    if (allChanges.length <= COMPARE_MAX_CHANGES) {
+      originalRenderCompareChanges();
+      return;
+    }
+    evalGlobal(
+      `window.__buddyAllChanges = compareChanges; compareChanges = compareChanges.slice(0, ${COMPARE_MAX_CHANGES});`
+    );
+    try {
+      originalRenderCompareChanges();
+    } finally {
+      evalGlobal("compareChanges = window.__buddyAllChanges; delete window.__buddyAllChanges;");
+    }
+    const counts = { all: allChanges.length, mod: 0, add: 0, rem: 0 };
+    allChanges.forEach((change) => {
+      counts[change.kind as "mod" | "add" | "rem"] += 1;
+    });
+    w.setText?.("changesCount", counts.all);
+    w.setText?.("changesAllCount", counts.all);
+    w.setText?.("changesModCount", counts.mod);
+    w.setText?.("changesAddCount", counts.add);
+    w.setText?.("changesRemCount", counts.rem);
+    w.setText?.(
+      "changesFootCount",
+      viewLanguageIsZh()
+        ? `${counts.all} 处更改 · 显示前 ${COMPARE_MAX_CHANGES.toLocaleString("en-US")} 处`
+        : `${counts.all} changes · showing first ${COMPARE_MAX_CHANGES.toLocaleString("en-US")}`
+    );
+    const list = document.getElementById("changeList");
+    if (list) {
+      const note = document.createElement("div");
+      note.className = "changes-empty";
+      note.textContent = viewLanguageIsZh()
+        ? `仅显示前 ${COMPARE_MAX_CHANGES.toLocaleString("en-US")} 处，共 ${counts.all.toLocaleString("en-US")} 处更改。`
+        : `Showing the first ${COMPARE_MAX_CHANGES.toLocaleString("en-US")} of ${counts.all.toLocaleString("en-US")} changes.`;
+      list.appendChild(note);
+    }
+  };
+
   renderCompareMenus();
+}
+
+function showCompareLimit(
+  a: { name: string; text: string },
+  b: { name: string; text: string },
+  linesA: number,
+  linesB: number
+): void {
+  evalGlobal(
+    `compareChanges = []; selectedChange = null; compareLineCounts = { a: ${linesA}, b: ${linesB} };`
+  );
+  const message = viewLanguageIsZh()
+    ? `文件过大，未生成逐行对比。\n${a.name} · ${linesA.toLocaleString("en-US")} 行\n${b.name} · ${linesB.toLocaleString("en-US")} 行`
+    : `These files are too large for a line-by-line comparison.\n${a.name} · ${linesA.toLocaleString("en-US")} lines\n${b.name} · ${linesB.toLocaleString("en-US")} lines`;
+  const html = `<div class="tree-empty" style="position:absolute;left:24px;top:48px;white-space:pre-line;line-height:1.7">${w.escHtml(
+    message
+  )}</div>`;
+  for (const id of ["codeA", "codeB"]) {
+    const host = document.getElementById(id);
+    if (host) host.innerHTML = html;
+  }
+  const list = document.getElementById("changeList");
+  if (list) {
+    list.innerHTML = `<div class="changes-empty">${viewLanguageIsZh() ? "文件过大，已停止逐行对比。" : "Comparison paused for very large files."}</div>`;
+  }
+  for (const id of [
+    "changesCount",
+    "changesAllCount",
+    "changesModCount",
+    "changesAddCount",
+    "changesRemCount"
+  ]) {
+    w.setText?.(id, "0");
+  }
+  w.setText?.("changesFootCount", viewLanguageIsZh() ? "已停止对比" : "Comparison paused");
+  w.setText?.("cmpPath", "—");
+  w.setText?.("cmpToolbarDiffText", viewLanguageIsZh() ? "文件过大" : "Files too large");
+  w.setText?.("cmpStatusDiffText", viewLanguageIsZh() ? "文件过大" : "Files too large");
+  w.setText?.("cmpStatusFiles", "2 files");
+  w.setText?.(
+    "cmpStatusLines",
+    `${Math.max(linesA, linesB).toLocaleString("en-US")} lines`
+  );
 }
 
 
