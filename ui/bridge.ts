@@ -1508,6 +1508,7 @@ const COMPARE_PRETTY_MAX_BYTES = 400_000;
 const COMPARE_MAX_LINES = 10_000;
 const COMPARE_MAX_CHANGES = 2_000;
 const COMPARE_HIGHLIGHT_MAX_CHARS = 8_000;
+const COMPARE_PREVIEW_LINES = 2_000;
 
 function patchCompareFlow(): void {
   const originalSelect = w.selectCompareFile;
@@ -1628,10 +1629,33 @@ function patchCompareFlow(): void {
     };
     for (const side of ["a", "b"] as const) {
       const host = document.getElementById(side === "a" ? "codeA" : "codeB");
-      if (host) {
+      if (!host) continue;
+      const selected = docs[side];
+      if (!selected.name) {
         host.innerHTML = `<div class="tree-empty" style="padding:36px 24px;text-align:center;line-height:1.7">${w.escHtml(
           message(side)
         )}</div>`;
+        continue;
+      }
+      const lines = selected.text.split("\n");
+      const visible = lines.slice(0, COMPARE_PREVIEW_LINES);
+      const rows = visible.map((line, index) => ({
+        n: index + 1,
+        text: line,
+        html: w.highlightJsonLine(line),
+        cls: "",
+        changes: []
+      }));
+      w.renderCompareCode(side === "a" ? "codeA" : "codeB", rows);
+      if (lines.length > COMPARE_PREVIEW_LINES) {
+        const note = document.createElement("div");
+        note.className = "tree-empty";
+        note.style.padding = "10px 18px";
+        note.style.textAlign = "center";
+        note.textContent = viewLanguageIsZh()
+          ? `已显示前 ${COMPARE_PREVIEW_LINES.toLocaleString("en-US")} 行，共 ${lines.length.toLocaleString("en-US")} 行。选择另一侧文件开始对比。`
+          : `Showing the first ${COMPARE_PREVIEW_LINES.toLocaleString("en-US")} of ${lines.length.toLocaleString("en-US")} lines. Choose the other side to compare.`;
+        host.appendChild(note);
       }
     }
     const changeList = document.getElementById("changeList");
