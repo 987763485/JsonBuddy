@@ -3473,9 +3473,10 @@ trajectoryStyle.textContent = `
     display: flex;
     flex-direction: column;
     background: var(--card-2);
-    border: 1px solid var(--line-strong);
-    border-radius: 9px;
-    box-shadow: var(--shadow-node);
+    border: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
     overflow: hidden;
   }
   .buddy-trajectory.inspector-hidden .trajectory-inspector,
