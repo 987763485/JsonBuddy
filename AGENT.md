@@ -4,7 +4,7 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。搜索跳转、Mock 生成上限、导入导出、OpenAPI 导入、流缓冲虚拟列表与磁盘归档、表格长数据虚拟化、JSON 自动保存与脏状态、动态状态栏、剪贴板与字体打包、运行时 Mock 生成、应用级审计、原生 HTTPS 端点测试、窗口级文件拖放与原生菜单均已接入；当前继续做边界校验、兼容性回归与文档同步。
+当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。搜索跳转、Mock 生成上限、导入导出、OpenAPI 导入、流缓冲虚拟列表与磁盘归档、表格长数据虚拟化、JSON 自动保存与脏状态、动态状态栏、剪贴板与字体打包、运行时 Mock 生成、应用级审计、原生 HTTPS 端点测试、窗口级文件拖放与原生菜单均已接入。JSON 转代码的类型推断、合并、命名与全部目标语言输出已迁移到 Rust，TypeScript 只负责调用 `generate_code` 与渲染结果；当前继续做边界校验、兼容性回归与文档同步。
 
 ## 模块进度
 
@@ -21,7 +21,7 @@
 - [x] 树视图：第六种视图、节点展开/折叠、筛选、路径检查器、复制路径与跳转源码
 - [x] 表格视图：真实 JSON 驱动、数组/对象分节、列选择、行筛选、单元格检查器与源码定位；长数组/对象使用固定行高虚拟窗口，滚动与筛选不截断数据
 - [x] 图形视图：真实 JSON 节点/边、缩放/拖拽/布局切换、迷你地图与空/错误状态
-- [x] 代码生成：TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart、JSON Schema
+- [x] 代码生成：TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart、JSON Schema；核心类型图推断、数组合并、命名、可选/可空处理与代码输出全部在 Rust `codegen.rs`，前端只调用 `generate_code`、缓存结果并渲染
 - [x] 导入导出：CSV / JSON / JSONL 导入；CSV、Excel、Mock 与生成代码原生保存导出
 - [x] JSON 搜索与生成限制：结果计数与编辑器定位；Mock 生成默认 100 条、上限 1,000 条，生成参数持久化而生成数据不写入项目文件，打开时重新生成
 - [x] 状态栏与本地化：有效/无效 JSON、行号列号、光标 JSON 路径（可复制）、保留缓冲；树/表/图、对话、审计、代码生成与 OpenAPI 导入动态文案随语言切换

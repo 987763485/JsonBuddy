@@ -1,4 +1,5 @@
 mod audit;
+mod codegen;
 mod conversation;
 mod data;
 mod documents;
@@ -32,6 +33,20 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[tauri::command]
 fn parse_yaml_document(text: String) -> Result<serde_json::Value, String> {
     yaml::parse_yaml_document(&text)
+}
+
+#[tauri::command]
+async fn generate_code(
+    text: String,
+    language: String,
+    file_name: String,
+    extension: String,
+) -> Result<codegen::GeneratedCode, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        codegen::generate(&text, &language, &file_name, &extension)
+    })
+    .await
+    .map_err(|error| format!("code generation task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -423,6 +438,7 @@ pub fn run() {
             save_text_file,
             parse_yaml_document,
             test_local_request,
+            generate_code,
             remove_recent_json_document,
             list_recent_streams,
             open_stream,
