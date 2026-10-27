@@ -559,6 +559,12 @@ let editor: EditorView | null = null;
 let editorHost: HTMLDivElement | null = null;
 let syncing = false;
 let chromeTimer: number | null = null;
+let buddyTrackedDoc: BridgeDoc | null = null;
+let buddyDocumentVersion = 0;
+let buddySavedVersion = 0;
+let buddyAutosaveTimer: number | null = null;
+let buddyAutosaveFailedPath = "";
+let buddyDocumentSaveChain: Promise<unknown> = Promise.resolve();
 const highlightCompartment = new Compartment();
 
 function evalGlobal<T = any>(code: string): T {
@@ -571,6 +577,131 @@ function currentDoc(): BridgeDoc | null {
   } catch {
     return null;
   }
+}
+
+function documentHasSavePath(doc: BridgeDoc | null | undefined): boolean {
+  const path = doc?.path ?? "";
+  return !!path && path !== "Local file" && path !== "Not saved yet";
+}
+
+function documentIsDirty(): boolean {
+  return buddyDocumentVersion !== buddySavedVersion;
+}
+
+function updateDocumentDirtyIndicator(doc = currentDoc()): void {
+  const dot = document.querySelector<HTMLElement>(".tb-file .dirty");
+  if (!dot) return;
+  const unsaved = !documentHasSavePath(doc);
+  dot.hidden = false;
+  dot.style.visibility = unsaved || documentIsDirty() ? "" : "hidden";
+}
+
+function clearDocumentAutosaveTimer(): void {
+  if (buddyAutosaveTimer !== null) {
+    window.clearTimeout(buddyAutosaveTimer);
+    buddyAutosaveTimer = null;
+  }
+}
+
+function queueDocumentSave(path: string, text: string): Promise<JsonDocument> {
+  const run = buddyDocumentSaveChain.then(() =>
+    invoke<JsonDocument>("save_json_document", { path, text })
+  );
+  buddyDocumentSaveChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+function scheduleDocumentAutosave(doc: BridgeDoc | null, delay = 900): void {
+  clearDocumentAutosaveTimer();
+  if (!documentHasSavePath(doc) || !documentIsDirty()) return;
+  buddyAutosaveTimer = window.setTimeout(() => {
+    buddyAutosaveTimer = null;
+    void autosaveDocument(doc);
+  }, delay);
+}
+
+function applySavedDocument(
+  doc: BridgeDoc,
+  saved: JsonDocument,
+  savedVersion: number
+): void {
+  if (savedVersion > buddySavedVersion) buddySavedVersion = savedVersion;
+  if (buddyDocumentVersion === savedVersion) {
+    Object.assign(doc, asBridgeDoc(saved));
+  }
+  updateDocumentDirtyIndicator(doc);
+  try {
+    w.updateDocumentChrome?.(doc);
+    w.renderFileMenuJsonRecents?.();
+    w.renderToolFileMenu?.();
+    renderCompareMenus();
+  } catch {
+    // The prototype may be switching pages while a save completes.
+  }
+  if (buddyDocumentVersion !== savedVersion) {
+    scheduleDocumentAutosave(doc);
+  }
+}
+
+async function autosaveDocument(doc: BridgeDoc | null): Promise<void> {
+  if (
+    !doc ||
+    currentDoc() !== doc ||
+    !documentHasSavePath(doc) ||
+    !documentIsDirty()
+  ) {
+    return;
+  }
+  const text = doc.text ?? "";
+  const path = doc.path;
+  const version = buddyDocumentVersion;
+  try {
+    const saved = await queueDocumentSave(path, text);
+    buddyAutosaveFailedPath = "";
+    if (currentDoc() !== doc) return;
+    applySavedDocument(doc, saved, version);
+  } catch (error) {
+    if (buddyAutosaveFailedPath !== path) {
+      buddyAutosaveFailedPath = path;
+      toast("Could not autosave document", String(error));
+    }
+  }
+}
+
+function flushPreviousDocument(doc: BridgeDoc | null): void {
+  const previous = buddyTrackedDoc;
+  if (
+    !previous ||
+    previous === doc ||
+    !documentHasSavePath(previous) ||
+    buddyDocumentVersion === buddySavedVersion
+  ) {
+    return;
+  }
+  const text = previous.text ?? "";
+  void queueDocumentSave(previous.path, text).catch((error) => {
+    toast("Could not autosave document", String(error));
+  });
+}
+
+function installDocumentAutosave(): void {
+  const flush = () => {
+    const doc = currentDoc();
+    if (doc && documentHasSavePath(doc) && documentIsDirty()) {
+      void autosaveDocument(doc);
+    }
+  };
+  window.addEventListener("blur", flush, { passive: true });
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.visibilityState === "hidden") flush();
+    },
+    { passive: true }
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -625,9 +756,11 @@ const BUDDY_TOAST_ZH: Record<string, string> = {
   "Open or create a file first.": "请先打开或创建文件。",
   "Document saved": "文档已保存",
   "Could not save document": "无法保存文档",
+  "Could not autosave document": "无法自动保存文档",
   "Removed from recent files": "已从最近文件移除",
   "Could not remove recent file": "无法移除最近文件",
   "Could not load local data": "无法加载本地数据",
+  "Could not load stream history": "无法加载流历史",
   "Could not open file": "无法打开文件",
   "Could not import CSV": "无法导入 CSV",
   "Could not format JSON": "无法格式化 JSON",
@@ -692,6 +825,9 @@ function ensureEditor(): EditorView | null {
             active.data = undefined;
             active.lineCount = update.state.doc.lines;
             active.sizeLabel = formatBytes(new Blob([active.text]).size);
+            buddyDocumentVersion += 1;
+            updateDocumentDirtyIndicator(active);
+            scheduleDocumentAutosave(active);
             if (chromeTimer) window.clearTimeout(chromeTimer);
             chromeTimer = window.setTimeout(() => {
               try {
@@ -719,12 +855,26 @@ function syncEditor(force = false): void {
   const doc = currentDoc();
   const next = doc?.text ?? "";
   const current = view.state.doc.toString();
+  const documentChanged = doc !== buddyTrackedDoc;
+  if (documentChanged) {
+    flushPreviousDocument(doc);
+    clearDocumentAutosaveTimer();
+    buddyTrackedDoc = doc;
+    buddyAutosaveFailedPath = "";
+    buddySavedVersion = buddyDocumentVersion;
+    updateDocumentDirtyIndicator(doc);
+  }
   if (force || current !== next) {
     syncing = true;
     view.dispatch({
       changes: { from: 0, to: current.length, insert: next }
     });
     syncing = false;
+    if (!documentChanged && current !== next) {
+      buddyDocumentVersion += 1;
+      updateDocumentDirtyIndicator(doc);
+      scheduleDocumentAutosave(doc);
+    }
     updateJsonEditorStatus(view.state, true);
   }
 }
@@ -1235,8 +1385,17 @@ interface BridgeStreamFile {
   counts: string[];
 }
 
+interface StreamArchivePage {
+  events: StreamEvent[];
+  hasMore: boolean;
+}
+
 let buddyStreamSnapshot: StreamSnapshot | null = null;
 let buddyStreamEvents: StreamEvent[] = [];
+let buddyStreamArchiveCount = 0;
+let buddyStreamArchiveLoading = false;
+let buddyStreamArchiveExhausted = false;
+let buddyStreamArchiveLoaded = false;
 let buddyStreamFollowing: string | null = null;
 let buddyStreamRateSamples: { at: number; count: number }[] = [];
 let buddyStreamLastEventAt: number | null = null;
@@ -1502,6 +1661,88 @@ function renderRealStreamSource(live: boolean): void {
   host.dataset.windowEnd = String(end);
 }
 
+async function loadOlderStreamEvents(): Promise<void> {
+  if (
+    buddyStreamArchiveLoading ||
+    buddyStreamArchiveExhausted ||
+    !buddyStreamSnapshot
+  ) {
+    return;
+  }
+  const first = buddyStreamEvents[0];
+  if (!first || first.line <= 1) {
+    buddyStreamArchiveExhausted = true;
+    return;
+  }
+  const path = buddyStreamSnapshot.path;
+  buddyStreamArchiveLoading = true;
+  try {
+    const page = await invoke<StreamArchivePage>("read_stream_archive", {
+      path,
+      beforeLine: first.line,
+      limit: 500
+    });
+    if (
+      !buddyStreamSnapshot ||
+      buddyStreamSnapshot.path !== path ||
+      buddyStreamEvents[0]?.line !== first.line
+    ) {
+      return;
+    }
+    if (!page.events.length) {
+      buddyStreamArchiveExhausted = true;
+      return;
+    }
+    const existing = new Set(buddyStreamEvents.map((event) => event.line));
+    const older = page.events.filter(
+      (event) => event.line < first.line && !existing.has(event.line)
+    );
+    if (!older.length) {
+      buddyStreamArchiveExhausted = true;
+      return;
+    }
+    const host = document.getElementById("streamCode");
+    if (!host) return;
+    const wrap = host.classList.contains("wrap");
+    const previousScrollTop = host.scrollTop;
+    const previousFirstLine = first.line;
+    const maxLoaded = 30000;
+    let prefix = older;
+    let trimmed = 0;
+    if (buddyStreamEvents.length + older.length > maxLoaded) {
+      const allowed = Math.max(0, maxLoaded - buddyStreamEvents.length);
+      trimmed = older.length - allowed;
+      prefix = older.slice(trimmed);
+      buddyStreamArchiveExhausted = true;
+    } else {
+      buddyStreamArchiveExhausted = !page.hasMore;
+    }
+    if (trimmed) buddyStreamArchiveExhausted = true;
+    if (!prefix.length) return;
+    buddyStreamEvents = [...prefix, ...buddyStreamEvents];
+    buddyStreamArchiveCount += prefix.length;
+    buddyStreamArchiveLoaded = true;
+    if (buddyStreamSnapshot) buddyStreamSnapshot.events = buddyStreamEvents;
+    const live = !getStreamPaused();
+    renderRealStreamSource(live);
+    if (wrap) {
+      const row = Array.from(host.querySelectorAll<HTMLElement>(".sl")).find(
+        (item) => Number(item.querySelector(".ln")?.textContent) === previousFirstLine
+      );
+      row?.scrollIntoView({ block: "start" });
+    } else {
+      host.scrollTop = previousScrollTop + prefix.length * 23;
+    }
+    updateStreamBufferMeter();
+    renderRealStreamEvents(live);
+  } catch (error) {
+    buddyStreamArchiveExhausted = true;
+    toast("Could not load stream history", String(error));
+  } finally {
+    buddyStreamArchiveLoading = false;
+  }
+}
+
 function streamNearBottom(host: HTMLElement | null): boolean {
   if (!host) return true;
   return host.scrollHeight - host.scrollTop - host.clientHeight < 56;
@@ -1572,6 +1813,7 @@ function bindStreamScroll(): void {
   if (!host) return;
   buddyStreamScrollBound = true;
   host.addEventListener("scroll", () => {
+    if (host.scrollTop < 180) void loadOlderStreamEvents();
     if (host.classList.contains("wrap")) return;
     requestAnimationFrame(() => {
       const live = !getStreamPaused();
@@ -1667,6 +1909,21 @@ function updateStreamRateChrome(file: BridgeStreamFile, live: boolean): void {
   w.setText("monStat1", `${lines} lines`);
 }
 
+function updateStreamBufferMeter(): void {
+  const buffered = Math.max(
+    0,
+    Math.min(10000, buddyStreamEvents.length - buddyStreamArchiveCount)
+  );
+  w.setText(
+    "bufferText",
+    `${buffered.toLocaleString("en-US")} / 10,000 lines`
+  );
+  const fill = document.getElementById("bufferFill");
+  if (fill) {
+    fill.style.width = `${Math.min(100, (buffered / 10000) * 100).toFixed(2)}%`;
+  }
+}
+
 function updateStreamBufferLabel(): void {
   const bufferLabel = document.querySelector<HTMLElement>(
     ".status-monitor .status-right .status-item.live-only"
@@ -1705,15 +1962,7 @@ function updateRealStreamChrome(file: BridgeStreamFile, live: boolean): void {
   );
   w.setText("monitorLines", `${lines} lines`);
   w.setText("monitorSize", zstd ? `${file.decoded} decoded` : file.size);
-  const buffered = buddyStreamEvents.length;
-  w.setText(
-    "bufferText",
-    `${buffered.toLocaleString("en-US")} / 10,000 lines`
-  );
-  const fill = document.getElementById("bufferFill");
-  if (fill) {
-    fill.style.width = `${Math.min(100, (buffered / 10000) * 100).toFixed(2)}%`;
-  }
+  updateStreamBufferMeter();
   updateStreamBufferLabel();
   w.setText("edgeText", w.t(live ? "Following live edge" : "Paused · follow to resume"));
   w.setText("monitorStatusText", live ? "Following" : "Paused");
@@ -2099,11 +2348,17 @@ function renderConversationSession(live: boolean): void {
 }
 
 let buddyAuditEntries: AuditEntry[] = [];
+let buddyAppAuditEntries: AuditEntry[] = [];
 let buddyAuditConfig: AuditConfig | null = null;
 let buddyAuditAck = new Set<string>();
 let buddyAuditActive = false;
 let buddyAuditSeverity = "all";
 let auditRenderTimer: number | null = null;
+let auditBridgeReady = false;
+
+function allAuditEntries(): AuditEntry[] {
+  return [...buddyAppAuditEntries, ...buddyAuditEntries];
+}
 
 function auditTime(value?: string | null): string {
   if (!value) return "";
@@ -2152,7 +2407,13 @@ const AUDIT_RULES_ZH: Record<string, string> = {
   "Rule: shell command observed and allowed by the sandbox.":
     "规则：沙箱观察到并允许的 Shell 命令。",
   "Rule: file read was denied.": "规则：文件读取已被拒绝。",
-  "Rule: file read inside the workspace.": "规则：工作区内的文件读取。"
+  "Rule: file read inside the workspace.": "规则：工作区内的文件读取。",
+  "Rule: mock route path escapes its project mount.":
+    "规则：Mock 路由路径超出项目挂载范围。",
+  "Rule: mock project removed from local storage.":
+    "规则：已从本地存储删除 Mock 项目。",
+  "Rule: non-local request blocked by the local network policy.":
+    "规则：本地网络策略已阻止非本地请求。"
 };
 
 function auditLanguageIsZh(): boolean {
@@ -2261,7 +2522,7 @@ function renderAudit(): void {
   if (!buddyAuditActive) return;
   const host = document.getElementById("auditList");
   if (!host) return;
-  host.innerHTML = buddyAuditEntries
+  host.innerHTML = allAuditEntries()
     .map((entry, index) => auditItemHtml(entry, index === 0))
     .join("");
   host.querySelectorAll<HTMLElement>("[data-ack-id]").forEach((button) => {
@@ -2314,6 +2575,23 @@ async function loadAuditConfig(): Promise<AuditConfig> {
   return config;
 }
 
+function startAuditEventBridge(): void {
+  if (auditBridgeReady || !hasTauri) return;
+  if (typeof (window as any).__TAURI_INTERNALS__?.transformCallback !== "function") {
+    return;
+  }
+  auditBridgeReady = true;
+  void listen<AuditEntry>("audit-entry", (event) => {
+    buddyAppAuditEntries = [
+      event.payload,
+      ...buddyAppAuditEntries.filter((entry) => entry.id !== event.payload.id)
+    ].slice(0, 500);
+    if (buddyAuditActive) scheduleAuditRender();
+  }).catch((error) => {
+    console.warn("could not listen for audit events", error);
+  });
+}
+
 function patchAuditFlow(): void {
   const originalApplyMonitorFilter = w.applyMonitorFilter;
   const originalOpenAuditSource = w.openAuditSource;
@@ -2323,11 +2601,26 @@ function patchAuditFlow(): void {
     const selected = document.querySelector<HTMLElement>(
       "#auditList .audit-item.sel"
     );
-    const entry = buddyAuditEntries.find(
+    const entry = allAuditEntries().find(
       (candidate) => candidate.id === selected?.dataset.auditId
     );
+    if (
+      !entry ||
+      entry.line <= 0 ||
+      entry.path !== buddyStreamSnapshot?.path
+    ) {
+      if (entry) {
+        toast(
+          viewLanguageIsZh()
+            ? "该审计项没有流内源码位置"
+            : "This audit entry has no stream source line",
+          entry.target
+        );
+      }
+      return;
+    }
     originalOpenAuditSource();
-    if (entry?.line) focusStreamEventLine(entry.line);
+    focusStreamEventLine(entry.line);
   };
 
   w.copyAuditTarget = (button: HTMLElement) => {
@@ -2368,7 +2661,7 @@ function patchAuditFlow(): void {
   };
 
   w.buddyAcknowledgeAudit = async (id: string, _button: HTMLElement) => {
-    const entry = buddyAuditEntries.find((candidate) => candidate.id === id);
+    const entry = allAuditEntries().find((candidate) => candidate.id === id);
     const key = entry?.category || id;
     try {
       const config = await invoke<AuditConfig>("acknowledge_audit", {
@@ -5336,6 +5629,10 @@ function patchStreamFlow(): void {
     const snapshot = await invoke<StreamSnapshot>("open_stream", { path });
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
+    buddyStreamArchiveCount = 0;
+    buddyStreamArchiveLoading = false;
+    buddyStreamArchiveExhausted = false;
+    buddyStreamArchiveLoaded = false;
     buddyStreamPending = 0;
     buddyStreamFocusLine = null;
     resetStreamRate();
@@ -5452,6 +5749,10 @@ function patchStreamFlow(): void {
       if (buddyStreamSnapshot?.path === id) {
         buddyStreamSnapshot = null;
         buddyStreamEvents = [];
+        buddyStreamArchiveCount = 0;
+        buddyStreamArchiveLoading = false;
+        buddyStreamArchiveExhausted = false;
+        buddyStreamArchiveLoaded = false;
         buddyConversation = null;
         buddyStreamPending = 0;
         buddyStreamFocusLine = null;
@@ -5507,6 +5808,10 @@ function startStreamEventBridge(): void {
     if (!buddyStreamSnapshot || payload.path !== buddyStreamSnapshot.path) return;
     if (payload.reset) {
       buddyStreamEvents = payload.events;
+      buddyStreamArchiveCount = 0;
+      buddyStreamArchiveLoading = false;
+      buddyStreamArchiveExhausted = false;
+      buddyStreamArchiveLoaded = false;
       buddyStreamPending = 0;
       buddyStreamFocusLine = null;
       resetStreamRate();
@@ -5514,8 +5819,16 @@ function startStreamEventBridge(): void {
     } else {
       recordStreamTraffic(payload.events.length);
       buddyStreamEvents = [...buddyStreamEvents, ...payload.events];
-      const cutoff = buddyStreamEvents.length - 10000;
-      if (cutoff > 0) buddyStreamEvents = buddyStreamEvents.slice(cutoff);
+      buddyStreamArchiveExhausted = false;
+      const cutoff =
+        buddyStreamEvents.length - (buddyStreamArchiveLoaded ? 30000 : 10000);
+      if (cutoff > 0) {
+        buddyStreamEvents = buddyStreamEvents.slice(cutoff);
+        buddyStreamArchiveCount = Math.max(
+          0,
+          buddyStreamArchiveCount - Math.min(cutoff, buddyStreamArchiveCount)
+        );
+      }
     }
     buddyStreamSnapshot = {
       ...buddyStreamSnapshot,
@@ -7703,22 +8016,17 @@ function patchJsonDocumentFlow(): void {
   w.saveCurrentDocument = async () => {
     const doc = currentDoc();
     if (!doc) return;
-    if (!doc.path) {
+    if (!documentHasSavePath(doc)) {
       toast("Could not save document", "Open or create a file first.");
       return;
     }
+    clearDocumentAutosaveTimer();
+    const text = doc.text ?? "";
+    const version = buddyDocumentVersion;
     try {
-      const saved = await invoke<JsonDocument>("save_json_document", {
-        path: doc.path,
-        text: doc.text ?? ""
-      });
-      Object.assign(doc, asBridgeDoc(saved));
-      try {
-        w.updateDocumentChrome(doc);
-        w.renderFileMenuJsonRecents?.();
-        w.renderToolFileMenu?.();
-      } catch {
-        // Ignore transient UI updates while a page closes.
+      const saved = await queueDocumentSave(doc.path, text);
+      if (currentDoc() === doc) {
+        applySavedDocument(doc, saved, version);
       }
       toast("Document saved", saved.name);
     } catch (error) {
@@ -7780,6 +8088,7 @@ async function bootstrap(): Promise<void> {
     patchToastLocalization();
     patchClipboard();
     patchJsonDocumentFlow();
+    installDocumentAutosave();
     installGlobalFileDrop();
     startMenuBridge();
     patchCompareFlow();
@@ -7802,6 +8111,7 @@ async function bootstrap(): Promise<void> {
       }
     }, 1000);
     patchAuditFlow();
+    startAuditEventBridge();
     patchSearchReveal();
     installTreeView();
     installTableData();
@@ -7813,14 +8123,17 @@ async function bootstrap(): Promise<void> {
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
-    const [projects, serverStatus, requestLogs, auditConfig] = await Promise.all([
-      invoke<MockProject[]>("list_mock_projects"),
-      invoke<MockServerStatus>("mock_server_status"),
-      invoke<MockRequestLog[]>("mock_request_logs"),
-      invoke<AuditConfig>("audit_config")
-    ]);
+    const [projects, serverStatus, requestLogs, auditConfig, appAudit] =
+      await Promise.all([
+        invoke<MockProject[]>("list_mock_projects"),
+        invoke<MockServerStatus>("mock_server_status"),
+        invoke<MockRequestLog[]>("mock_request_logs"),
+        invoke<AuditConfig>("audit_config"),
+        invoke<AuditEntry[]>("list_app_audit").catch(() => [])
+      ]);
     seedMockProjects(projects, serverStatus, requestLogs);
     buddyAuditConfig = auditConfig;
+    buddyAppAuditEntries = Array.isArray(appAudit) ? appAudit : [];
     buddyAuditAck = new Set(auditConfig.acknowledged);
     syncAuditSettingsChecks();
     w.renderFileMenuStreamRecents?.();

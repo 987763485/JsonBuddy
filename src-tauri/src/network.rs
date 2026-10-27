@@ -15,7 +15,7 @@ fn is_loopback_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
-fn validate_local_url(raw: &str) -> Result<Url, String> {
+pub(crate) fn validate_local_url(raw: &str) -> Result<Url, String> {
     let mut url = Url::parse(raw).map_err(|error| format!("invalid request URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err("only http and https requests are allowed".to_string());

@@ -10,7 +10,7 @@ mod state;
 mod streams;
 mod yaml;
 
-use audit::{AuditConfig, AuditState};
+use audit::{AuditConfig, AuditEntry, AuditState};
 use data::DataPaths;
 use documents::{
     create_document, load_recent, read_document, record_recent, remove_recent,
@@ -24,7 +24,8 @@ use state::AppState;
 use std::collections::HashMap;
 use std::io;
 use streams::{
-    read_snapshot, record_recent as record_stream_recent, StreamManager, StreamSnapshot,
+    read_archive, read_snapshot_cached, record_recent as record_stream_recent, remove_archive,
+    StreamArchivePage, StreamManager, StreamSnapshot,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -35,9 +36,27 @@ fn parse_yaml_document(text: String) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn test_local_request(
+    app: AppHandle,
+    state: State<'_, AppState>,
     url: String,
     method: String,
 ) -> Result<network::LocalRequestResult, String> {
+    if let Err(error) = network::validate_local_url(&url) {
+        audit::record_and_emit(
+            &app,
+            &state.audit,
+            AuditEntry::app(
+                "network",
+                "critical",
+                "Network egress",
+                url.clone(),
+                "app-request",
+                true,
+                "Rule: non-local request blocked by the local network policy.",
+            ),
+        );
+        return Err(error);
+    }
     network::send_local_request(&url, &method).await
 }
 
@@ -178,7 +197,7 @@ fn list_recent_streams(state: State<'_, AppState>) -> Result<Vec<RecentStream>, 
 
 #[tauri::command]
 fn open_stream(state: State<'_, AppState>, path: String) -> Result<StreamSnapshot, String> {
-    let snapshot = read_snapshot(&path)?;
+    let snapshot = read_snapshot_cached(&path, &state.paths.stream_cache)?;
     let mut store = state
         .recents
         .lock()
@@ -198,7 +217,7 @@ fn start_stream_follow(
         .streams
         .lock()
         .map_err(|_| "stream state is unavailable".to_string())?
-        .start(&app, &path)
+        .start(&app, &path, &state.paths.stream_cache)
 }
 
 #[tauri::command]
@@ -212,10 +231,26 @@ fn stop_stream_follow(state: State<'_, AppState>, path: String) -> Result<(), St
 }
 
 #[tauri::command]
+fn read_stream_archive(
+    state: State<'_, AppState>,
+    path: String,
+    before_line: u64,
+    limit: Option<usize>,
+) -> Result<StreamArchivePage, String> {
+    read_archive(
+        &state.paths.stream_cache,
+        &path,
+        before_line,
+        limit.unwrap_or(500),
+    )
+}
+
+#[tauri::command]
 fn remove_recent_stream(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<Vec<RecentStream>, String> {
+    remove_archive(&state.paths.stream_cache, &path);
     let mut store = state
         .recents
         .lock()
@@ -249,8 +284,33 @@ fn create_mock_project(
 }
 
 #[tauri::command]
-fn delete_mock_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.mock.delete_project(&id)
+fn delete_mock_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let name = state
+        .mock
+        .projects()
+        .into_iter()
+        .find(|project| project.id == id)
+        .map(|project| project.name)
+        .unwrap_or_else(|| id.clone());
+    state.mock.delete_project(&id)?;
+    audit::record_and_emit(
+        &app,
+        &state.audit,
+        AuditEntry::app(
+            "delete",
+            "critical",
+            "Project deletion",
+            name,
+            "mock-project",
+            false,
+            "Rule: mock project removed from local storage.",
+        ),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -266,6 +326,11 @@ fn mock_request_logs(state: State<'_, AppState>) -> Result<Vec<MockRequestLog>, 
 #[tauri::command]
 fn audit_config(state: State<'_, AppState>) -> Result<AuditConfig, String> {
     Ok(state.audit.config())
+}
+
+#[tauri::command]
+fn list_app_audit(state: State<'_, AppState>) -> Vec<AuditEntry> {
+    state.audit.entries()
 }
 
 #[tauri::command]
@@ -363,6 +428,7 @@ pub fn run() {
             open_stream,
             start_stream_follow,
             stop_stream_follow,
+            read_stream_archive,
             remove_recent_stream,
             list_mock_projects,
             save_mock_project,
@@ -371,6 +437,7 @@ pub fn run() {
             mock_server_status,
             mock_request_logs,
             audit_config,
+            list_app_audit,
             update_audit_categories,
             acknowledge_audit,
             start_mock_server,
