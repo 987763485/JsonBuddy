@@ -939,10 +939,7 @@ function ensureEditor(): EditorView | null {
                 // The prototype may be switching pages while a keystroke lands.
               }
             }, 130);
-            scheduleTreeRender();
-            scheduleTableRender();
-            scheduleGraphRender();
-            scheduleCodegenRender();
+            scheduleActiveViewRender();
           })
         ]
       })
@@ -1265,11 +1262,11 @@ function patchDocumentFunctions(): void {
   const originalApplyTheme = w.applyTheme;
 
   w.documentSize = (doc: BridgeDoc | null) => {
-    if (doc && doc.text == null && doc.sizeLabel) return doc.sizeLabel;
+    if (doc?.sizeLabel) return doc.sizeLabel;
     return originalDocumentSize(doc);
   };
   w.documentLineCount = (doc: BridgeDoc | null) => {
-    if (doc && doc.text == null && doc.lineCount != null) return doc.lineCount;
+    if (doc && typeof doc.lineCount === "number") return doc.lineCount;
     return originalDocumentLineCount(doc);
   };
   w.renderCode = () => {
@@ -1286,10 +1283,7 @@ function patchDocumentFunctions(): void {
     } catch {
       // The prototype clears the focus line when closing search.
     }
-    scheduleTreeRender();
-    scheduleTableRender();
-    scheduleGraphRender();
-    scheduleCodegenRender();
+    scheduleActiveViewRender();
   };
   w.applyTheme = (theme: string) => {
     originalApplyTheme(theme);
@@ -1417,9 +1411,29 @@ function asBridgeDoc(doc: JsonDocument): BridgeDoc {
   };
 }
 
+function prepareDocumentView(): void {
+  try {
+    w.setView("text");
+    evalGlobal("app.dataset.toolPage = 'editor'");
+    document.querySelector(".code-wrap")?.getBoundingClientRect();
+    // CodeMirror must know the visible viewport before a large document is
+    // inserted. Otherwise it briefly renders every line, and WebKit can block
+    // for seconds on the first layout. requestMeasure + readMeasured forces
+    // that measurement synchronously while the empty editor is cheap to lay out.
+    const view = ensureEditor();
+    if (view) {
+      view.requestMeasure();
+      (view as any).readMeasured?.();
+    }
+  } catch {
+    // The workspace may still be mounting.
+  }
+}
+
 function installDocument(doc: JsonDocument): void {
   const full = asBridgeDoc(doc);
   try {
+    prepareDocumentView();
     w.addJsonRecent(full, full.path);
     w.setCurrentDocument(full);
     w.renderToolFileMenu?.();
@@ -3616,6 +3630,19 @@ async function renderTreeView(): Promise<void> {
   updateTreeInspector();
 }
 
+function scheduleActiveViewRender(): void {
+  let view = "";
+  try {
+    view = evalGlobal<string>("app.dataset.view") ?? "";
+  } catch {
+    return;
+  }
+  if (view === "tree") scheduleTreeRender();
+  else if (view === "table") scheduleTableRender();
+  else if (view === "graph" || view === "split") scheduleGraphRender();
+  else if (view === "code") scheduleCodegenRender();
+}
+
 function scheduleTreeRender(delay = 160): void {
   if (!treeInstalled) return;
   if (treeRenderTimer !== null) window.clearTimeout(treeRenderTimer);
@@ -3749,7 +3776,7 @@ function installTreeView(): void {
     }
     if (view === "tree") void renderTreeView();
     else if (view === "table") renderTableData();
-    else if (view === "graph") renderGraphData();
+    else if (view === "graph" || view === "split") renderGraphData();
     else if (view === "code") {
       try {
         void renderGeneratedCode(evalGlobal<string>("currentLang"));
@@ -3825,7 +3852,11 @@ function installTreeView(): void {
     toast(w.t("Revealed in source"), treeSelectedPath);
   };
   updateTreeLanguage();
-  void renderTreeView();
+  try {
+    if (evalGlobal<string>("app.dataset.view") === "tree") void renderTreeView();
+  } catch {
+    // The app may still be mounting.
+  }
 }
 
 /* ------------------------------------------------------------
@@ -4367,8 +4398,12 @@ function installTableData(): void {
     tableFilterQuery = String(query ?? "");
     renderTableData();
   };
-  renderTableData();
   bindVirtualTableScroll();
+  try {
+    if (evalGlobal<string>("app.dataset.view") === "table") renderTableData();
+  } catch {
+    // The app may still be mounting.
+  }
 }
 
 /* ------------------------------------------------------------
@@ -4763,7 +4798,12 @@ function installGraphData(): void {
       window.addEventListener("pointerup", up, { once: true });
     });
   }
-  renderGraphData();
+  try {
+    const view = evalGlobal<string>("app.dataset.view");
+    if (view === "graph" || view === "split") renderGraphData();
+  } catch {
+    // The app may still be mounting.
+  }
 }
 
 /* ------------------------------------------------------------
@@ -4929,6 +4969,11 @@ function paintGeneratedCode(def: any, generated: GeneratedCode, doc: BridgeDoc |
 }
 
 async function renderGeneratedCode(langId: string): Promise<void> {
+  try {
+    if (evalGlobal<string>("app.dataset.view") !== "code") return;
+  } catch {
+    return;
+  }
   const defs = evalGlobal<any[]>("LANG_DEFS");
   const def = defs.find((item) => item.id === langId) ?? defs[0];
   if (!def) return;
@@ -4952,7 +4997,8 @@ async function renderGeneratedCode(langId: string): Promise<void> {
     });
     if (
       request !== codegenRequest ||
-      codegenKeyFor(def.id, currentDoc()) !== key
+      codegenKeyFor(def.id, currentDoc()) !== key ||
+      evalGlobal<string>("app.dataset.view") !== "code"
     ) {
       return;
     }
@@ -4963,7 +5009,8 @@ async function renderGeneratedCode(langId: string): Promise<void> {
   } catch (error) {
     if (
       request !== codegenRequest ||
-      codegenKeyFor(def.id, currentDoc()) !== key
+      codegenKeyFor(def.id, currentDoc()) !== key ||
+      evalGlobal<string>("app.dataset.view") !== "code"
     ) {
       return;
     }
@@ -7942,6 +7989,7 @@ function patchJsonDocumentFlow(): void {
     const item = list.find((entry) => entry.id === id);
     if (!item) return;
     if (!item.path || item.path === "Local file" || item.path === "Not saved yet") {
+      prepareDocumentView();
       originalOpenJsonToolFile(id);
       syncEditor(false);
       return;
