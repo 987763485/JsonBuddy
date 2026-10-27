@@ -67,6 +67,21 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 - `start_stream_follow`
 - `stop_stream_follow`
 - `remove_recent_stream`
+- `list_mock_projects`
+- `create_mock_project`
+- `save_mock_project`
+- `delete_mock_project`
+- `set_mock_project_running`
+- `set_mock_runtime_response`
+- `start_mock_server`
+- `stop_mock_server`
+- `mock_server_status`
+- `mock_request_logs`
+- `audit_config`
+- `update_audit_categories`
+- `acknowledge_audit`
+- `save_text_file`
+- `parse_yaml_document`
 
 ## 数据与安全边界
 
@@ -84,9 +99,9 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 2. **设置桥接**：语言、主题、Mock 端口、HTTPS、数据目录、i18n（已完成）
 3. **JSON 工作区桥接**：最近文件、打开/新建/保存、CodeMirror 编辑、格式化/压缩/校验（已完成）
 4. **JSON 对比桥接**：两侧最近文件与本地文件读取、差异渲染（已完成）
-5. **JSON 流桥接**：Rust `notify` + 增量 zstd 快照/跟随、暂停、删除、实时事件渲染与固定行高虚拟列表（已完成）；`conversation.rs` 将 CodeBuddy / DeepSeek harness 事件归一化为只读对话、模型切换与工具调用（已完成）
-6. **JSON Mock**：Rust 项目库、无状态路由、localhost 服务、HTTP/HTTPS、真实请求日志、原型项目/端点/响应编辑、JSON Schema / OpenAPI 导入、生成/导出（已完成）
-7. **审计**：Rust 单一策略模块、工具调用分类、500 条上限、设置持久化、按类别复用确认、真实审计面板（已完成）
+5. **JSON 流桥接**：Rust `notify` + 增量 zstd 快照/跟随、暂停、删除、实时事件渲染、固定行高虚拟列表、真实事件速率与保留缓冲计数（已完成）；`conversation.rs` 将 CodeBuddy / DeepSeek harness 事件归一化为只读对话、模型切换与工具调用，思考内容可展开（已完成）
+6. **JSON Mock**：Rust 项目库、共享 localhost 服务、项目独立挂载/卸载、无状态路由、HTTP/HTTPS、真实请求日志、运行时长与总请求数、原型项目/端点/响应编辑、JSON Schema / OpenAPI 导入、生成/导出（已完成）；生成数据通过独立的运行期响应供服务使用，不写入项目文件，编辑生成响应时转为固定响应
+7. **审计**：Rust 单一策略模块、工具调用分类、500 条上限、设置持久化、按类别复用确认、原始事件定位、动态本地化与真实审计面板（已完成）
 8. **树 / 表格 / 图形视图**：树视图、表格视图与图形视图均已接入真实 JSON（展开/筛选/检查器、分节表格/列选择、节点/边与布局切换）
 9. **代码生成**：从当前 JSON 推断类型模型，输出 12 个目标（11 种语言 + JSON Schema），支持可选/可空字段与单文件 `$defs`（已完成）
 10. **导入导出**：CSV/JSON/JSONL 导入写入 `~/.json_buddy/documents`；CSV、Excel、Mock 导出与生成代码保存走原生对话框（已完成）
@@ -98,8 +113,12 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 - Tauri 集成：`npm run tauri:build -- --debug`
 - 功能模块完成后追加对应单元测试和端到端验证；不修改锁定 UI 文件。
 - 示例 JSONL 文件位于 `example/`，用于流模块测试，不进入 Git。
-- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告、1,000 定义上限与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。
+- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告、1,000 定义上限、远程 `$ref` 拒绝、导入来源持久化与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。Mock JSON Schema 导出使用单文件 `$defs`，OpenAPI 导出内联响应 Schema 与示例。
+- Mock 生成数据不进入项目文件；`set_mock_runtime_response` 仅更新内存，服务优先返回运行期响应，项目保存时保留运行期响应但序列化时跳过。
+- 复制使用 Tauri 剪贴板插件与本地化 Toast；Inter 与 JetBrains Mono 由构建产物提供，无远程字体请求。
+- JSON 状态栏根据编辑器选择更新行号、列号、JSON 路径与有效性；路径可点击复制。
 - 运行中的 Mock 服务在共享端口或 HTTPS 设置变化时会停止并按新配置重启；启动失败会回落到停止状态并提示。
+- 多个 Mock 项目可同时运行在同一个服务端口下，各自挂载到 `/<slug>`；停止最后一个运行项目或删除运行中的项目会停止服务。项目 ID 在写入/删除项目文件前校验，拒绝路径分隔符等非法字符。
 
 ## Git 约定
 

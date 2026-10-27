@@ -163,6 +163,7 @@ export interface MockEndpoint {
   delayMs: number;
   enabled: boolean;
   response: unknown;
+  importedFrom?: string | null;
 }
 
 export interface MockProject {
@@ -181,6 +182,9 @@ export interface MockServerStatus {
   port: number;
   https: boolean;
   url: string;
+  uptimeSeconds?: number;
+  totalRequests?: number;
+  runningProjects?: string[];
 }
 
 export interface MockRequestLog {

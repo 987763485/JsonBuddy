@@ -1,10 +1,16 @@
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import { json } from "@codemirror/lang-json";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, syntaxTree, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
 import { basicSetup, EditorView } from "codemirror";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { writeText as writeClipboard } from "@tauri-apps/plugin-clipboard-manager";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AppSettings,
@@ -524,6 +530,30 @@ editorStyle.textContent = `
 `;
 document.head.appendChild(editorStyle);
 
+const streamFocusStyle = document.createElement("style");
+streamFocusStyle.textContent = `
+  .stream-code .sl.focus {
+    background: var(--accent-soft) !important;
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+`;
+document.head.appendChild(streamFocusStyle);
+
+const chatStyle = document.createElement("style");
+chatStyle.textContent = `
+  .chat .reasoning.on .i { transform: rotate(90deg); }
+  .chat .reasoning .i { transition: transform 120ms ease; }
+  .chat .reasoning-body {
+    margin-left: 0;
+    color: var(--ink-2);
+    border-left: 2px solid var(--line-strong);
+    border-radius: 0 6px 6px 0;
+    font-size: 10px;
+  }
+  .chat .reasoning-body[hidden] { display: none !important; }
+`;
+document.head.appendChild(chatStyle);
+
 let editor: EditorView | null = null;
 let editorHost: HTMLDivElement | null = null;
 let syncing = false;
@@ -595,7 +625,11 @@ function ensureEditor(): EditorView | null {
             )
           ),
           EditorView.updateListener.of((update) => {
-            if (!update.docChanged || syncing) return;
+            if (syncing) return;
+            if (update.selectionSet || update.docChanged) {
+              updateJsonEditorStatus(update.state, update.docChanged);
+            }
+            if (!update.docChanged) return;
             const active = currentDoc();
             if (!active) return;
             active.text = update.state.doc.toString();
@@ -635,6 +669,7 @@ function syncEditor(force = false): void {
       changes: { from: 0, to: current.length, insert: next }
     });
     syncing = false;
+    updateJsonEditorStatus(view.state, true);
   }
 }
 
@@ -659,6 +694,133 @@ function focusEditorLine(line: number): void {
     scrollIntoView: true
   });
   view.focus();
+}
+
+type JsonPathSegment = { kind: "key"; key: string } | { kind: "index"; index: number };
+
+function jsonValueNode(name: string): boolean {
+  return ["Object", "Array", "String", "Number", "True", "False", "Null"].includes(
+    name
+  );
+}
+
+function jsonPathAtCursor(state: EditorState): JsonPathSegment[] {
+  const pos = state.selection.main.head;
+  let node = syntaxTree(state).resolveInner(pos, -1);
+  const segments: JsonPathSegment[] = [];
+  let guard = 0;
+  while (node && guard < 64) {
+    guard += 1;
+    const parent = node.parent;
+    if (!parent) break;
+    if (parent.name === "Property") {
+      const nameNode = parent.getChild("PropertyName");
+      if (nameNode) {
+        const raw = state.sliceDoc(nameNode.from, nameNode.to);
+        try {
+          const key = JSON.parse(raw);
+          if (typeof key === "string") segments.unshift({ kind: "key", key });
+        } catch {
+          segments.unshift({ kind: "key", key: raw.replace(/^"|"$/g, "") });
+        }
+      }
+    } else if (parent.name === "Array") {
+      let index = 0;
+      let child = parent.firstChild;
+      while (child && child.to <= node.from) {
+        if (jsonValueNode(child.name)) index += 1;
+        child = child.nextSibling;
+      }
+      segments.unshift({ kind: "index", index });
+    }
+    node = parent;
+  }
+  return segments;
+}
+
+function jsonPathText(segments: JsonPathSegment[]): string {
+  return segments.reduce((text, segment) => {
+    if (segment.kind === "index") return `${text}[${segment.index}]`;
+    return /^[A-Za-z_$][\w$]*$/.test(segment.key)
+      ? `${text}.${segment.key}`
+      : `${text}[${JSON.stringify(segment.key)}]`;
+  }, "$");
+}
+
+function renderJsonStatusPath(segments: JsonPathSegment[], path: string): void {
+  const host = document.querySelector<HTMLElement>(
+    ".status-normal .status-path"
+  );
+  if (!host) return;
+  let html = '<span class="punct">$</span>';
+  for (const segment of segments) {
+    if (segment.kind === "index") {
+      html += `<span class="punct">[${segment.index}]</span>`;
+    } else if (/^[A-Za-z_$][\w$]*$/.test(segment.key)) {
+      html += `<span class="punct">.</span>${w.escHtml(segment.key)}`;
+    } else {
+      html += `<span class="punct">[</span><span class="punct">${w.escHtml(
+        JSON.stringify(segment.key)
+      )}</span><span class="punct">]</span>`;
+    }
+  }
+  html +=
+    '<svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-4);margin-left:6px"><use href="#i-copy"/></svg>';
+  host.innerHTML = html;
+  host.dataset.path = path;
+  host.title = "Copy path";
+  if (!host.dataset.buddyCopyBound) {
+    host.dataset.buddyCopyBound = "1";
+    host.addEventListener("click", () => {
+      const value = host.dataset.path || "$";
+      void w.copyText(value, w.t("File path copied"), value);
+    });
+  }
+}
+
+function updateJsonStatusLanguage(): void {
+  if (!editor) return;
+  updateJsonEditorStatus(editor.state, true);
+}
+
+let jsonStatusValidateTimer: number | null = null;
+
+function scheduleJsonStatusValidation(state: EditorState): void {
+  if (jsonStatusValidateTimer !== null) {
+    window.clearTimeout(jsonStatusValidateTimer);
+  }
+  const snapshot = state.doc.toString();
+  jsonStatusValidateTimer = window.setTimeout(() => {
+    jsonStatusValidateTimer = null;
+    const pill = document.querySelector<HTMLElement>(
+      ".status-normal .status-pill"
+    );
+    if (!pill) return;
+    let valid = true;
+    try {
+      JSON.parse(snapshot);
+    } catch {
+      valid = false;
+    }
+    pill.className = valid ? "status-pill" : "status-pill warn";
+    pill.innerHTML = `<i></i>${valid ? w.t("Valid JSON") : w.t("Invalid JSON")}`;
+  }, 300);
+}
+
+function updateJsonEditorStatus(state: EditorState, validate: boolean): void {
+  const cursor = document.getElementById("statusCursor");
+  if (!cursor) return;
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  const column = head - line.from + 1;
+  const zh = viewLanguageIsZh();
+  cursor.textContent =
+    zh
+      ? `第 ${line.number} 行，第 ${column} 列`
+      : `Ln ${line.number}, Col ${column}`;
+  const segments = jsonPathAtCursor(state);
+  renderJsonStatusPath(segments, jsonPathText(segments));
+  if (validate) scheduleJsonStatusValidation(state);
 }
 
 function patchSearchReveal(): void {
@@ -721,6 +883,24 @@ function applyBackendSettings(settings: AppSettings): void {
   }
 }
 
+function patchClipboard(): void {
+  const originalCopyText = w.copyText;
+  w.copyText = async (text: unknown, message?: string, detail?: string) => {
+    const value = String(text ?? "");
+    try {
+      await writeClipboard(value);
+      w.showToast?.(message || "Copied", detail == null ? value : detail);
+    } catch {
+      originalCopyText?.(text, message, detail);
+    }
+  };
+  w.copyInspectorPath = () => {
+    const path = document.getElementById("inspPath")?.textContent?.trim() ?? "";
+    if (!path) return;
+    void w.copyText(path, w.t("File path copied"), path);
+  };
+}
+
 function patchSettingsPersistence(): void {
   w.persistAppSettings = () => {
     const settings = evalGlobal<AppSettings>("appSettings");
@@ -737,10 +917,16 @@ function patchSettingsPersistence(): void {
         try {
           await invoke("stop_mock_server");
           const status = await invoke<MockServerStatus>("start_mock_server");
-          mockServerRunning = status.running;
+          setMockServerStatus(status);
+          if ((status.totalRequests ?? 0) === 0) mockRequestLogs = [];
           applyMockRunningState();
         } catch (error) {
-          mockServerRunning = false;
+          setMockServerStatus({
+            running: false,
+            port: buddySavedSettings?.mockPort ?? 4010,
+            https: buddySavedSettings?.mockHttps ?? false,
+            url: ""
+          });
           applyMockRunningState();
           toast("Could not restart mock server", String(error));
         }
@@ -876,7 +1062,7 @@ async function loadCompareFile(side: "a" | "b", path: string, name: string): Pro
   w.closeCompareFileMenus();
   w.renderDiff();
   w.renderFileMenuJsonRecents?.();
-  toast("Opened compare file", `${side.toUpperCase()} · ${name}`);
+  toast(w.t("Opened JSON file"), `${side.toUpperCase()} · ${name}`);
 }
 
 function patchCompareFlow(): void {
@@ -953,8 +1139,61 @@ interface BridgeStreamFile {
 let buddyStreamSnapshot: StreamSnapshot | null = null;
 let buddyStreamEvents: StreamEvent[] = [];
 let buddyStreamFollowing: string | null = null;
+let buddyStreamRateSamples: { at: number; count: number }[] = [];
+let buddyStreamLastEventAt: number | null = null;
+const STREAM_RATE_WINDOW_MS = 5000;
+
+function resetStreamRate(): void {
+  buddyStreamRateSamples = [];
+  buddyStreamLastEventAt = null;
+}
+
+function recordStreamTraffic(count: number): void {
+  if (count <= 0) return;
+  const now = Date.now();
+  buddyStreamLastEventAt = now;
+  buddyStreamRateSamples.push({ at: now, count });
+  pruneStreamTraffic(now);
+}
+
+function pruneStreamTraffic(now = Date.now()): void {
+  const cutoff = now - STREAM_RATE_WINDOW_MS;
+  buddyStreamRateSamples = buddyStreamRateSamples.filter(
+    (sample) => sample.at >= cutoff
+  );
+}
+
+function streamRateValue(): number {
+  const now = Date.now();
+  pruneStreamTraffic(now);
+  const events = buddyStreamRateSamples.reduce(
+    (total, sample) => total + sample.count,
+    0
+  );
+  return events / (STREAM_RATE_WINDOW_MS / 1000);
+}
+
+function streamRateText(): string {
+  const value = streamRateValue();
+  return value >= 10
+    ? String(Math.round(value))
+    : value.toFixed(1).replace(/\.0$/, "");
+}
+
+function streamLastEventAge(): string {
+  const zh = streamLanguageIsZh();
+  if (!buddyStreamLastEventAt) return zh ? "刚刚" : "just now";
+  const seconds = Math.max(0, (Date.now() - buddyStreamLastEventAt) / 1000);
+  if (seconds < 1) return zh ? "刚刚" : "just now";
+  if (seconds < 60) {
+    return zh ? `${seconds.toFixed(1)} 秒前` : `${seconds.toFixed(1)}s ago`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  return zh ? `${minutes} 分钟前` : `${minutes}m ago`;
+}
 let buddyConversation: Conversation | null = null;
 let buddyStreamPending = 0;
+let buddyStreamFocusLine: number | null = null;
 let buddyStreamScrollBound = false;
 let streamBridgeReady = false;
 
@@ -1120,12 +1359,13 @@ function renderRealStreamSource(live: boolean): void {
   const total = buddyStreamEvents.length;
   if (!total) {
     host.innerHTML =
-      '<div class="stream-spacer" style="height:24px"></div><div class="stream-empty" style="padding:16px;color:var(--ink-3);font-size:10px">No events yet.</div>';
+      `<div class="stream-spacer" style="height:24px"></div><div class="stream-empty" style="padding:16px;color:var(--ink-3);font-size:10px">${streamLanguageIsZh() ? "暂无事件。" : "No events yet."}</div>`;
     return;
   }
   const rowHtml = (event: StreamEvent, index: number, freshBase: number) => {
     const fresh = live && index >= freshBase;
-    return `<div class="sl${fresh ? " new" : ""}"><span class="ln">${event.line}</span><span class="cl">${w.highlightJsonLine(
+    const focused = event.line === buddyStreamFocusLine;
+    return `<div class="sl${fresh ? " new" : ""}${focused ? " focus" : ""}"><span class="ln">${event.line}</span><span class="cl">${w.highlightJsonLine(
       event.raw
     )}</span></div>`;
   };
@@ -1166,6 +1406,16 @@ function streamNearBottom(host: HTMLElement | null): boolean {
   return host.scrollHeight - host.scrollTop - host.clientHeight < 56;
 }
 
+function streamLanguageIsZh(): boolean {
+  return document.getElementById("app")?.dataset.lang === "zh";
+}
+
+function streamPendingText(count: number): string {
+  return streamLanguageIsZh()
+    ? `${count.toLocaleString("en-US")} 条新事件 · 点击跟随`
+    : `${count.toLocaleString("en-US")} new events · click to follow`;
+}
+
 function scrollStreamToBottom(): void {
   const host = document.getElementById("streamCode");
   if (!host) return;
@@ -1173,7 +1423,38 @@ function scrollStreamToBottom(): void {
   host.scrollTop = host.scrollHeight;
   renderRealStreamSource(!buddyStreamSnapshot ? false : !getStreamPaused());
   const edge = document.getElementById("edgeText");
-  if (edge) edge.textContent = "Following live edge";
+  if (edge) edge.textContent = w.t("Following live edge");
+}
+
+function focusStreamEventLine(line: number): void {
+  if (!buddyStreamSnapshot || !buddyStreamEvents.length) return;
+  let index = buddyStreamEvents.findIndex((event) => event.line === line);
+  if (index < 0) {
+    index = buddyStreamEvents.findIndex((event) => event.line >= line);
+    if (index < 0) index = buddyStreamEvents.length - 1;
+  }
+  const target = buddyStreamEvents[index];
+  if (!target) return;
+  buddyStreamFocusLine = target.line;
+  w.setMonitorMode?.("source");
+  const host = document.getElementById("streamCode");
+  if (!host) return;
+  const live = !getStreamPaused();
+  window.setTimeout(() => {
+    if (host.classList.contains("wrap")) {
+      renderRealStreamSource(live);
+      const row = Array.from(host.querySelectorAll<HTMLElement>(".sl")).find(
+        (item) => Number(item.querySelector(".ln")?.textContent) === target.line
+      );
+      row?.scrollIntoView({ block: "center" });
+    } else {
+      host.scrollTop = Math.max(
+        0,
+        index * 23 + 8 - Math.floor(host.clientHeight / 2)
+      );
+      renderRealStreamSource(live);
+    }
+  }, 40);
 }
 
 function getStreamPaused(): boolean {
@@ -1196,7 +1477,7 @@ function bindStreamScroll(): void {
       if (streamNearBottom(host) && buddyStreamPending > 0) {
         buddyStreamPending = 0;
         const edge = document.getElementById("edgeText");
-        if (edge) edge.textContent = live ? "Following live edge" : "Paused · follow to resume";
+        if (edge) edge.textContent = w.t(live ? "Following live edge" : "Paused · follow to resume");
       }
       renderRealStreamSource(live);
     });
@@ -1240,37 +1521,111 @@ function renderRealStreamEvents(live: boolean): void {
   if (footer) footer.textContent = `${counts.all.toLocaleString("en-US")} events`;
 }
 
+function updateStreamRateChrome(file: BridgeStreamFile, live: boolean): void {
+  const zstd = file.format === "zstd";
+  const lines = file.lineLabel;
+  const rate = streamRateText();
+  if (!live) {
+    const zh = streamLanguageIsZh();
+    w.setHtml(
+      "monStat2",
+      zstd
+        ? `<b>${file.decoded}</b>${zh ? " 已解码" : " decoded"}`
+        : `<b>${file.size}</b>`
+    );
+    w.setText("monStat4", zh ? `修改于 ${file.modified}` : `modified ${file.modified}`);
+    w.setText("stat4Label", w.t("Modified"));
+    w.setText("stat4Value", file.modified);
+    w.setText(
+      "lpFrame",
+      zstd
+        ? zh
+          ? `已解码 · 最后 ${file.modified}`
+          : `Decoded · last ${file.modified}`
+        : zh
+          ? `最后 ${file.modified}`
+          : `Last ${file.modified}`
+    );
+    return;
+  }
+  const zh = streamLanguageIsZh();
+  w.setHtml("monStat2", `<b>${w.escHtml(rate)}</b>/s`);
+  w.setText("monStat4", streamLastEventAge());
+  w.setText("stat4Label", w.t("Rate"));
+  w.setText("stat4Value", zh ? `${rate} 行/秒` : `${rate} lines/s`);
+  w.setText(
+    "lpFrame",
+    zstd
+      ? zh
+        ? `帧 · 追加于 ${streamLastEventAge()}`
+        : `Frame · appended ${streamLastEventAge()}`
+      : zh
+        ? `追加于 ${streamLastEventAge()}`
+        : `Appended ${streamLastEventAge()}`
+  );
+  w.setText("monStat1", `${lines} lines`);
+}
+
+function updateStreamBufferLabel(): void {
+  const bufferLabel = document.querySelector<HTMLElement>(
+    ".status-monitor .status-right .status-item.live-only"
+  );
+  if (!bufferLabel) return;
+  bufferLabel.textContent = viewLanguageIsZh()
+    ? "缓冲 10,000"
+    : "Buffer 10,000";
+}
+
 function updateRealStreamChrome(file: BridgeStreamFile, live: boolean): void {
   const zstd = file.format === "zstd";
   const lines = file.lineLabel;
   w.setText("monStat1", `${lines} lines`);
   if (zstd) {
-    w.setHtml("monStat2", live ? "<b>live</b> decoded" : `<b>${file.decoded}</b> decoded`);
     w.setHtml("monStat3", `<b>${file.ratio}</b> zstd`);
   } else {
-    w.setHtml("monStat2", live ? "<b>live</b>" : `<b>${file.size}</b>`);
     w.setHtml("monStat3", "<b>JSONL</b> format");
   }
-  w.setText("monStat4", live ? "just now" : `modified ${file.modified}`);
   w.setText("stat1Label", zstd ? "Compressed" : "File size");
   w.setText("stat1Value", zstd ? file.compressed : file.size);
   w.setText("stat2Label", zstd ? "Decoded" : "Lines");
   w.setText("stat2Value", zstd ? file.decoded : lines);
   w.setText("stat3Label", zstd ? "Ratio" : "Format");
   w.setText("stat3Value", zstd ? file.ratio : "JSONL");
-  w.setText("stat4Label", live ? "Rate" : "Modified");
-  w.setText("stat4Value", live ? "live" : file.modified);
+  updateStreamRateChrome(file, live);
   w.setText("srcMeta", zstd ? `${lines} lines · ${file.decoded} decoded` : `${lines} lines · ${file.size}`);
+  w.setText("monitorPath", file.name);
+  w.setText(
+    "monitorFormat",
+    zstd
+      ? live
+        ? "zstd · incremental"
+        : "zstd · snapshot"
+      : "JSONL · UTF-8"
+  );
   w.setText("monitorLines", `${lines} lines`);
   w.setText("monitorSize", zstd ? `${file.decoded} decoded` : file.size);
-  w.setText("bufferText", `${lines} / 10,000 lines`);
+  const buffered = buddyStreamEvents.length;
+  w.setText(
+    "bufferText",
+    `${buffered.toLocaleString("en-US")} / 10,000 lines`
+  );
   const fill = document.getElementById("bufferFill");
-  if (fill) fill.style.width = `${Math.min(100, (file.lines / 10000) * 100).toFixed(2)}%`;
-  w.setText("edgeText", live ? "Following live edge" : "Paused · follow to resume");
+  if (fill) {
+    fill.style.width = `${Math.min(100, (buffered / 10000) * 100).toFixed(2)}%`;
+  }
+  updateStreamBufferLabel();
+  w.setText("edgeText", w.t(live ? "Following live edge" : "Paused · follow to resume"));
   w.setText("monitorStatusText", live ? "Following" : "Paused");
   const pill = document.getElementById("monitorStatusPill");
   if (pill) pill.className = `status-pill ${live ? "live" : "neutral"}`;
-  w.setText("lpFrame", live ? "New events appended" : `Last ${file.modified}`);
+}
+
+function chatLanguageIsZh(): boolean {
+  return document.getElementById("app")?.dataset.lang === "zh";
+}
+
+function chatUiText(english: string, chinese: string): string {
+  return chatLanguageIsZh() ? chinese : english;
 }
 
 function chatTime(value?: string | null): string {
@@ -1359,8 +1714,8 @@ function chatToolSummary(call: ConversationToolCall): string {
 }
 
 function chatToolLabel(call: ConversationToolCall): string {
-  if (call.status === "error") return "error";
-  if (call.status === "pending") return "running";
+  if (call.status === "error") return chatUiText("error", "错误");
+  if (call.status === "pending") return chatUiText("running", "运行中");
   return call.durationMs != null ? `${call.durationMs}ms · OK` : "OK";
 }
 
@@ -1397,7 +1752,7 @@ function chatModelSwitch(
     <span class="line"></span>
     <span class="pill">
       <svg class="i xs" viewBox="0 0 24 24"><use href="#i-swap"/></svg>
-      <span>Model switched</span>
+      <span>${w.escHtml(w.t("Model switched"))}</span>
       <span class="from">${w.escHtml(from)}</span>
       <svg class="i xs" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg>
       <span class="to">${w.escHtml(to)}</span>
@@ -1416,7 +1771,7 @@ function renderConversationMessage(
     return `<div class="msg user">
       <div class="avatar user">Y</div>
       <div class="msg-body">
-        <div class="msg-meta"><b>You</b><span>${w.escHtml(time)}</span></div>
+        <div class="msg-meta"><b>${w.escHtml(w.t("You"))}</b><span>${w.escHtml(time)}</span></div>
         <div class="bubble user">${chatMarkdown(message.text)}</div>
       </div>
     </div>`;
@@ -1431,21 +1786,26 @@ function renderConversationMessage(
     ${chatAvatar(message.model)}
     <div class="msg-body">
       <div class="msg-meta"><b>${w.escHtml(model)}</b><span>${w.escHtml(time)}</span>${
-        message.streaming ? '<span class="live-only">· streaming</span>' : ""
+        message.streaming ? `<span class="live-only">${w.escHtml(w.t("· streaming"))}</span>` : ""
       }</div>
       <div class="parts">
         ${
           message.reasoning
-            ? `<button class="reasoning"><svg class="i" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>Thought</button>`
+            ? `<button class="reasoning" onclick="this.classList.toggle('on'); const body=this.nextElementSibling; if(body) body.hidden=!body.hidden;"><svg class="i" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>${w.escHtml(chatUiText("Thought", "思考"))}</button>
+               <div class="bubble reasoning-body" hidden>${chatMarkdown(message.reasoning)}</div>`
             : ""
         }
         ${message.text ? `<div class="bubble">${chatMarkdown(message.text)}</div>` : ""}
         ${tools}
         <div class="msg-foot"><span>#L${message.line}</span>${
           message.toolCalls.length
-            ? `<span>·</span><span>${message.toolCalls.length} tool${
-                message.toolCalls.length === 1 ? "" : "s"
-              }</span>`
+            ? `<span>·</span><span>${w.escHtml(
+                chatLanguageIsZh()
+                  ? `${message.toolCalls.length} 个工具`
+                  : `${message.toolCalls.length} tool${
+                      message.toolCalls.length === 1 ? "" : "s"
+                    }`
+              )}</span>`
             : ""
         }</div>
       </div>
@@ -1497,7 +1857,7 @@ function renderConversation(live: boolean): void {
     );
     html += `<button class="context-card">
       <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
-      <span>System prompt</span>
+      <span>${w.escHtml(w.t("System prompt"))}</span>
       <span class="ctx-meta">${tokens.toLocaleString("en-US")} tokens</span>
     </button>`;
   }
@@ -1664,6 +2024,56 @@ function auditIcon(category: string): string {
   return icons[category] ?? "i-shield";
 }
 
+const AUDIT_LABELS_ZH: Record<string, string> = {
+  traversal: "目录穿越",
+  read: "文件读取",
+  upload: "文件上传",
+  delete: "文件删除",
+  shell: "Shell 执行",
+  network: "网络出站"
+};
+
+const AUDIT_RULES_ZH: Record<string, string> = {
+  "Rule: destructive file operation. The sandbox denied it.":
+    "规则：破坏性文件操作。沙箱已拒绝。",
+  "Rule: destructive file operation outside the allowlist.":
+    "规则：白名单外的破坏性文件操作。",
+  "Rule: path escapes the workspace root. The request is blocked by policy.":
+    "规则：路径超出工作区根目录。请求已被策略阻止。",
+  "Rule: outbound upload was denied.": "规则：外部上传已被拒绝。",
+  "Rule: outbound upload to a non-local destination.":
+    "规则：向非本地目标的外部上传。",
+  "Rule: outbound request was denied.": "规则：外部请求已被拒绝。",
+  "Rule: outbound request to a non-local host.":
+    "规则：向非本地主机的外部请求。",
+  "Rule: shell command failed or was denied.":
+    "规则：Shell 命令失败或已被拒绝。",
+  "Rule: shell command observed and allowed by the sandbox.":
+    "规则：沙箱观察到并允许的 Shell 命令。",
+  "Rule: file read was denied.": "规则：文件读取已被拒绝。",
+  "Rule: file read inside the workspace.": "规则：工作区内的文件读取。"
+};
+
+function auditLanguageIsZh(): boolean {
+  return document.getElementById("app")?.dataset.lang === "zh";
+}
+
+function auditUiText(english: string, chinese: string): string {
+  return auditLanguageIsZh() ? chinese : english;
+}
+
+function auditItemLabel(entry: AuditEntry): string {
+  return auditLanguageIsZh()
+    ? AUDIT_LABELS_ZH[entry.category] ?? entry.label
+    : entry.label;
+}
+
+function auditItemRule(entry: AuditEntry): string {
+  return auditLanguageIsZh()
+    ? AUDIT_RULES_ZH[entry.rule] ?? entry.rule
+    : entry.rule;
+}
+
 function auditItemHtml(entry: AuditEntry, selected: boolean): string {
   const acknowledged =
     buddyAuditAck.has(entry.id) || buddyAuditAck.has(entry.category);
@@ -1680,14 +2090,16 @@ function auditItemHtml(entry: AuditEntry, selected: boolean): string {
       data-severity="${w.escHtml(entry.severity)}"
       data-blocked="${blocked ? "1" : "0"}"
       data-audit-id="${w.escHtml(entry.id)}"
-      data-label="${w.escHtml(entry.label.toLowerCase())}"
+      data-label="${w.escHtml(auditItemLabel(entry).toLowerCase())}"
       onclick="selectAudit(this)">
     <div class="ai-top">
       <span class="ai-type"><svg class="i" viewBox="0 0 24 24"><use href="#${auditIcon(
         entry.category
-      )}"/></svg><span>${w.escHtml(entry.label)}</span></span>
+      )}"/></svg><span>${w.escHtml(auditItemLabel(entry))}</span></span>
       <span class="ai-decision ${blocked ? "blocked" : "allowed"}">${
-        blocked ? "Blocked" : "Allowed"
+        blocked
+          ? auditUiText("Blocked", "已阻止")
+          : auditUiText("Allowed", "已允许")
       }</span>
     </div>
     <div class="ai-target">${w.escHtml(entry.target || "—")}</div>
@@ -1697,17 +2109,23 @@ function auditItemHtml(entry: AuditEntry, selected: boolean): string {
       <span>${w.escHtml(entry.sessionId ?? "session")}</span>
     </div>
     <div class="ai-detail">
-      <div class="ai-rule">${w.escHtml(entry.rule)}</div>
+      <div class="ai-rule">${w.escHtml(auditItemRule(entry))}</div>
       <div class="ai-actions">
-        <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw event</button>
+        <button class="ai-action" onclick="event.stopPropagation(); selectAudit(this.closest('.audit-item')); openAuditSource()">${w.escHtml(
+          auditUiText("View raw event", "查看原始事件")
+        )}</button>
         ${
           acknowledged
-            ? '<button class="ai-action ack acked" disabled>Acknowledged</button>'
+            ? `<button class="ai-action ack acked" disabled>${w.escHtml(
+                auditUiText("Acknowledged", "已确认")
+              )}</button>`
             : `<button class="ai-action ack" data-ack-id="${w.escHtml(
                 entry.id
-              )}">Acknowledge</button>`
+              )}">${w.escHtml(auditUiText("Acknowledge", "确认"))}</button>`
         }
-        <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy target</button>
+        <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">${w.escHtml(
+          auditUiText("Copy target", "复制目标")
+        )}</button>
       </div>
     </div>
   </div>`;
@@ -1797,6 +2215,26 @@ async function loadAuditConfig(): Promise<AuditConfig> {
 
 function patchAuditFlow(): void {
   const originalApplyMonitorFilter = w.applyMonitorFilter;
+  const originalOpenAuditSource = w.openAuditSource;
+  const originalCopyAuditTarget = w.copyAuditTarget;
+
+  w.openAuditSource = () => {
+    const selected = document.querySelector<HTMLElement>(
+      "#auditList .audit-item.sel"
+    );
+    const entry = buddyAuditEntries.find(
+      (candidate) => candidate.id === selected?.dataset.auditId
+    );
+    originalOpenAuditSource();
+    if (entry?.line) focusStreamEventLine(entry.line);
+  };
+
+  w.copyAuditTarget = (button: HTMLElement) => {
+    const item = button.closest<HTMLElement>(".audit-item");
+    const target = item?.querySelector(".ai-target")?.textContent?.trim() ?? "";
+    if (!target) return;
+    w.copyText?.(target, w.t("Copied"), target);
+  };
   w.applyMonitorFilter = () => {
     originalApplyMonitorFilter();
     applyAuditSeverity();
@@ -1844,7 +2282,7 @@ function patchAuditFlow(): void {
           item.classList.add("acked");
           const action = item.querySelector<HTMLButtonElement>(".ai-action.ack");
           if (action) {
-            action.textContent = "Acknowledged";
+            action.textContent = auditUiText("Acknowledged", "已确认");
             action.disabled = true;
           }
         });
@@ -1915,6 +2353,7 @@ treeStyle.textContent = `
     user-select: none;
   }
   .tree-row:hover { background: var(--hover); }
+  .tree-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .tree-row.sel { background: var(--accent-soft); }
   .tree-row.sel .tree-key { color: var(--accent-2); }
   [data-theme="dark"] .tree-row.sel .tree-key { color: var(--accent); }
@@ -1962,6 +2401,10 @@ treeStyle.textContent = `
   .tree-muted { color: var(--ink-3); }
 `;
 document.head.appendChild(treeStyle);
+
+function viewLanguageIsZh(): boolean {
+  return document.getElementById("app")?.dataset.lang === "zh";
+}
 
 function treeTypeOf(value: unknown): string {
   if (value === null) return "null";
@@ -2079,7 +2522,7 @@ function renderTreeRows(
   const toggle = expandable
     ? `<button class="tree-toggle${expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
         path
-      )}" title="${expanded ? "Collapse" : "Expand"}">
+      )}" title="${viewLanguageIsZh() ? (expanded ? "折叠" : "展开") : expanded ? "Collapse" : "Expand"}">
         <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
       </button>`
     : '<span class="tree-toggle placeholder"></span>';
@@ -2096,7 +2539,7 @@ function renderTreeRows(
   }
   let html = `<div class="tree-row${path === treeSelectedPath ? " sel" : ""}" data-path="${w.escHtml(
     path
-  )}" onclick="buddyTreeSelect(this)" style="padding-left:${pad}px">
+  )}" tabindex="0" onclick="buddyTreeSelect(this)" style="padding-left:${pad}px">
     ${toggle}${keyHtml}<span class="tree-colon">:</span>${valueHtml}
     <span class="tree-type">${type}</span>
     <span class="tree-path">${w.escHtml(path)}</span>
@@ -2144,13 +2587,16 @@ function updateTreeInspector(): void {
 function renderTreeView(): void {
   const host = document.getElementById("buddyTreeBody");
   if (!host) return;
+  const focusedPath = (document.activeElement as HTMLElement | null)
+    ?.closest?.(".tree-row")
+    ?.getAttribute("data-path");
   const count = document.getElementById("buddyTreeCount");
   const doc = currentDoc();
   const source = doc?.text ?? "";
   if (!source.trim()) {
     host.innerHTML =
-      '<div class="tree-empty">Open a JSON document to inspect its tree.</div>';
-    if (count) count.textContent = "No document";
+      `<div class="tree-empty">${viewLanguageIsZh() ? "打开 JSON 文档以查看树。" : "Open a JSON document to inspect its tree."}</div>`;
+    if (count) count.textContent = viewLanguageIsZh() ? "无文档" : "No document";
     treeNodeIndex.clear();
     updateTreeInspector();
     return;
@@ -2160,8 +2606,8 @@ function renderTreeView(): void {
     value = JSON.parse(source);
   } catch {
     host.innerHTML =
-      '<div class="tree-empty">The document is not valid JSON. Fix the syntax to inspect the tree.</div>';
-    if (count) count.textContent = "Invalid JSON";
+      `<div class="tree-empty">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看树。" : "The document is not valid JSON. Fix the syntax to inspect the tree."}</div>`;
+    if (count) count.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
     treeNodeIndex.clear();
     updateTreeInspector();
     return;
@@ -2172,10 +2618,10 @@ function renderTreeView(): void {
   const budget: TreeRenderBudget = { remaining: 4000, truncated: false };
   const html = renderTreeRows("$", value, "$", 0, false, treeQuery, budget);
   host.innerHTML = `<div class="tree-body">${
-    html || '<div class="tree-empty">No nodes match this filter.</div>'
+    html || `<div class="tree-empty">${viewLanguageIsZh() ? "没有节点匹配此筛选。" : "No nodes match this filter."}</div>`
   }</div>${
     budget.truncated
-      ? '<div class="tree-empty">Showing the first 4,000 nodes.</div>'
+      ? `<div class="tree-empty">${viewLanguageIsZh() ? "显示前 4,000 个节点。" : "Showing the first 4,000 nodes."}</div>`
       : ""
   }`;
   host
@@ -2187,14 +2633,61 @@ function renderTreeView(): void {
         if (path) w.buddyTreeToggle(path);
       });
     });
+  const treeRows = Array.from(host.querySelectorAll<HTMLElement>(".tree-row"));
+  treeRows.forEach((row, index) => {
+    row.addEventListener("keydown", (event) => {
+      const path = row.dataset.path;
+      if (!path) return;
+      const toggle = row.querySelector<HTMLElement>(
+        ".tree-toggle:not(.placeholder)"
+      );
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        const target = treeRows[Math.max(0, Math.min(treeRows.length - 1, index + offset))];
+        if (target) {
+          w.buddyTreeSelect(target);
+          target.focus();
+        }
+      } else if (event.key === "ArrowRight" && toggle) {
+        event.preventDefault();
+        if (!toggle.classList.contains("open")) w.buddyTreeToggle(path);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        if (toggle?.classList.contains("open")) {
+          w.buddyTreeToggle(path);
+        } else {
+          const parent = path.replace(/\.[^.\[\]]+$|\[\d+\]$/, "");
+          const parentRow = treeRows.find((item) => item.dataset.path === parent);
+          if (parentRow) {
+            w.buddyTreeSelect(parentRow);
+            parentRow.focus();
+          }
+        }
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        w.buddyTreeSelect(row);
+      }
+    });
+  });
   if (!treeNodeIndex.has(treeSelectedPath)) {
     treeSelectedPath = "$";
     host.querySelector<HTMLElement>('.tree-row[data-path="$"]')?.classList.add("sel");
   }
+  if (focusedPath) {
+    const focusedRow = Array.from(
+      host.querySelectorAll<HTMLElement>(".tree-row")
+    ).find((row) => row.dataset.path === focusedPath);
+    focusedRow?.focus({ preventScroll: true });
+  }
   if (count) {
     count.textContent = budget.truncated
-      ? `4,000 of ${stats.nodes.toLocaleString("en-US")} nodes`
-      : `${stats.nodes.toLocaleString("en-US")} nodes · ${stats.depth} levels`;
+      ? viewLanguageIsZh()
+        ? `4,000 / ${stats.nodes.toLocaleString("en-US")} 个节点`
+        : `4,000 of ${stats.nodes.toLocaleString("en-US")} nodes`
+      : viewLanguageIsZh()
+        ? `${stats.nodes.toLocaleString("en-US")} 个节点 · ${stats.depth} 层`
+        : `${stats.nodes.toLocaleString("en-US")} nodes · ${stats.depth} levels`;
   }
   updateTreeInspector();
 }
@@ -2330,6 +2823,42 @@ function installTreeView(): void {
   w.applyLanguage = (language: string) => {
     originalApplyLanguage(language);
     updateTreeLanguage();
+    updateJsonStatusLanguage();
+    if (buddyAuditActive) renderAudit();
+    if (buddyConversation) renderConversation(!getStreamPaused());
+    try {
+      const file = evalGlobal<BridgeStreamFile | null>(
+        "typeof getMonitorFile === 'function' ? getMonitorFile(activeMonitorFileId) : null"
+      );
+      if (file) {
+        updateRealStreamChrome(file, !file.paused);
+        const edge = document.getElementById("edgeText");
+        if (edge) {
+          if (file.paused) edge.textContent = w.t("Paused · follow to resume");
+          else if (buddyStreamPending > 0) edge.textContent = streamPendingText(buddyStreamPending);
+          else edge.textContent = w.t("Following live edge");
+        }
+      }
+    } catch {
+      // The monitor view may not be mounted.
+    }
+    updateStreamBufferLabel();
+    let view = "";
+    try {
+      view = evalGlobal<string>("app.dataset.view") ?? "";
+    } catch {
+      view = "";
+    }
+    if (view === "tree") renderTreeView();
+    else if (view === "table") renderTableData();
+    else if (view === "graph") renderGraphData();
+    else if (view === "code") {
+      try {
+        renderGeneratedCode(evalGlobal<string>("currentLang"));
+      } catch {
+        // The code panel may not be mounted.
+      }
+    }
   };
   w.buddyTreeToggle = (path: string) => {
     if (treeExpanded.has(path)) treeExpanded.delete(path);
@@ -2345,6 +2874,7 @@ function installTreeView(): void {
       .forEach((element) => element.classList.remove("sel"));
     row.classList.add("sel");
     updateTreeInspector();
+    if (document.activeElement !== row) row.focus({ preventScroll: true });
   };
   w.buddyTreeFilter = (value: string) => {
     treeQuery = String(value ?? "").trim().toLowerCase();
@@ -2360,7 +2890,7 @@ function installTreeView(): void {
     renderTreeView();
   };
   w.buddyTreeCopyPath = () => {
-    w.copyText(treeSelectedPath, "Path copied", treeSelectedPath);
+    w.copyText(treeSelectedPath, w.t("File path copied"), treeSelectedPath);
   };
   w.buddyTreeReveal = () => {
     w.setView("text");
@@ -2377,7 +2907,7 @@ function installTreeView(): void {
         editor.focus();
       }
     }
-    toast("Revealed in source", treeSelectedPath);
+    toast(w.t("Revealed in source"), treeSelectedPath);
   };
   updateTreeLanguage();
   renderTreeView();
@@ -2508,11 +3038,11 @@ function renderArraySection(
   if (!rows.length) {
     body = `<tr><td class="v-muted" colspan="${
       objectMode ? colCount + 1 : 3
-    }">No rows</td></tr>`;
+    }">${viewLanguageIsZh() ? "无行" : "No rows"}</td></tr>`;
   }
   const notes: string[] = [];
-  if (objectMode && columns.length >= 24) notes.push("first 24 columns");
-  if (list.length > 500) notes.push("first 500 rows");
+  if (objectMode && columns.length >= 24) notes.push(viewLanguageIsZh() ? "前 24 列" : "first 24 columns");
+  if (list.length > 500) notes.push(viewLanguageIsZh() ? "前 500 行" : "first 500 rows");
   const extra = notes.length ? ` · ${notes.join(" · ")}` : "";
   return {
     rows: rows.length,
@@ -2544,7 +3074,7 @@ function renderObjectSection(
     </tr>`;
   }
   if (!entries.length) {
-    body = '<tr><td class="v-muted" colspan="3">Empty object</td></tr>';
+    body = `<tr><td class="v-muted" colspan="3">${viewLanguageIsZh() ? "空对象" : "Empty object"}</td></tr>`;
   }
   return {
     rows: entries.length,
@@ -2578,20 +3108,20 @@ function renderTableData(): void {
     <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>Reveal in source</button>
   </div>`;
   if (!source.trim()) {
-    sheet.innerHTML = `<div class="tree-empty">Open a JSON document to inspect its tables.</div>${inspector}`;
+    sheet.innerHTML = `<div class="tree-empty">${viewLanguageIsZh() ? "打开 JSON 文档以查看表格。" : "Open a JSON document to inspect its tables."}</div>${inspector}`;
     tableMeta.sections = 0;
     tableMeta.rows = 0;
-    if (countEl) countEl.textContent = "No document";
+    if (countEl) countEl.textContent = viewLanguageIsZh() ? "无文档" : "No document";
     return;
   }
   let value: unknown;
   try {
     value = JSON.parse(source);
   } catch {
-    sheet.innerHTML = `<div class="tree-empty">The document is not valid JSON. Fix the syntax to inspect its tables.</div>${inspector}`;
+    sheet.innerHTML = `<div class="tree-empty">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看表格。" : "The document is not valid JSON. Fix the syntax to inspect its tables."}</div>${inspector}`;
     tableMeta.sections = 0;
     tableMeta.rows = 0;
-    if (countEl) countEl.textContent = "Invalid JSON";
+    if (countEl) countEl.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
     return;
   }
   const parts: string[] = [];
@@ -2646,9 +3176,11 @@ function renderTableData(): void {
   }
   if (!document.getElementById("tableRowFilter")) {
     if (countEl) {
-      countEl.textContent = `${sections} section${sections === 1 ? "" : "s"} · ${rows} row${
-        rows === 1 ? "" : "s"
-      }`;
+      countEl.textContent = viewLanguageIsZh()
+        ? `${sections} 个区块 · ${rows} 行`
+        : `${sections} section${sections === 1 ? "" : "s"} · ${rows} row${
+            rows === 1 ? "" : "s"
+          }`;
     }
   }
 }
@@ -2657,9 +3189,11 @@ function updateTableCount(query: string): void {
   const countEl = document.getElementById("tableCount");
   if (!countEl) return;
   if (!query.trim()) {
-    countEl.textContent = `${tableMeta.sections} section${
-      tableMeta.sections === 1 ? "" : "s"
-    } · ${tableMeta.rows} row${tableMeta.rows === 1 ? "" : "s"}`;
+    countEl.textContent = viewLanguageIsZh()
+      ? `${tableMeta.sections} 个区块 · ${tableMeta.rows} 行`
+      : `${tableMeta.sections} section${
+          tableMeta.sections === 1 ? "" : "s"
+        } · ${tableMeta.rows} row${tableMeta.rows === 1 ? "" : "s"}`;
     return;
   }
   const sheet = document.querySelector(".table-view .table-sheet");
@@ -2670,9 +3204,11 @@ function updateTableCount(query: string): void {
   const visibleRows = [...sheet.querySelectorAll<HTMLElement>("table.dt tbody tr")].filter(
     (row) => !row.hidden
   ).length;
-  countEl.textContent = `${visibleRows} row${visibleRows === 1 ? "" : "s"} · ${visibleSections} section${
-    visibleSections === 1 ? "" : "s"
-  }`;
+  countEl.textContent = viewLanguageIsZh()
+    ? `${visibleRows} 行 · ${visibleSections} 个区块`
+    : `${visibleRows} row${visibleRows === 1 ? "" : "s"} · ${visibleSections} section${
+        visibleSections === 1 ? "" : "s"
+      }`;
 }
 
 function scheduleTableRender(delay = 160): void {
@@ -2999,7 +3535,7 @@ function renderGraphData(): void {
   const source = doc?.text ?? "";
   if (!source.trim()) {
     scene.innerHTML =
-      '<div class="tree-empty" style="position:absolute;left:24px;top:56px">Open a JSON document to inspect its graph.</div>';
+      `<div class="tree-empty" style="position:absolute;left:24px;top:56px">${viewLanguageIsZh() ? "打开 JSON 文档以查看图形。" : "Open a JSON document to inspect its graph."}</div>`;
     buddyGraphModel = null;
     return;
   }
@@ -3008,7 +3544,7 @@ function renderGraphData(): void {
     value = JSON.parse(source);
   } catch {
     scene.innerHTML =
-      '<div class="tree-empty" style="position:absolute;left:24px;top:56px">The document is not valid JSON. Fix the syntax to inspect the graph.</div>';
+      `<div class="tree-empty" style="position:absolute;left:24px;top:56px">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看图形。" : "The document is not valid JSON. Fix the syntax to inspect the graph."}</div>`;
     buddyGraphModel = null;
     return;
   }
@@ -4122,19 +4658,28 @@ function renderGeneratedCode(langId: string): void {
       ? `from ${doc.name} · ${buddyGenerated.records} record${
           buddyGenerated.records === 1 ? "" : "s"
         }`
-      : "No document";
+      : viewLanguageIsZh()
+        ? "无文档"
+        : "No document";
   }
+  const rootName = buddyGenerated.rootName || "Model";
   w.setText(
     "cgSummary",
-    `${buddyGenerated.rootName || "Model"} · ${buddyGenerated.types} type${
-      buddyGenerated.types === 1 ? "" : "s"
-    } · ${buddyGenerated.records} record${buddyGenerated.records === 1 ? "" : "s"}`
+    viewLanguageIsZh()
+      ? `${rootName} · ${buddyGenerated.types} 个类型 · ${buddyGenerated.records} 条记录`
+      : `${rootName} · ${buddyGenerated.types} type${
+          buddyGenerated.types === 1 ? "" : "s"
+        } · ${buddyGenerated.records} record${
+          buddyGenerated.records === 1 ? "" : "s"
+        }`
   );
   const code = buddyGenerated.code.replace(/^\n+|\n+$/g, "");
   const lines = code.split("\n");
   w.setText(
     "cgMeta",
-    `${lines.length} lines · ${(code.length / 1024).toFixed(2)} KB`
+    viewLanguageIsZh()
+      ? `${lines.length} 行 · ${(code.length / 1024).toFixed(2)} KB`
+      : `${lines.length} lines · ${(code.length / 1024).toFixed(2)} KB`
   );
   const host = document.getElementById("cgCode");
   if (host) {
@@ -4171,11 +4716,7 @@ function installCodegen(): void {
   w.renderCodegen = (id: string) => renderGeneratedCode(id);
   w.copyGenerated = () => {
     if (!buddyGenerated) return;
-    w.copyText(
-      buddyGenerated.code,
-      "Generated code copied",
-      buddyGenerated.file
-    );
+    w.copyText(buddyGenerated.code, w.t("Copied"), buddyGenerated.file);
   };
   w.downloadGenerated = async () => {
     if (!buddyGenerated) return;
@@ -4190,7 +4731,7 @@ function installCodegen(): void {
       });
       if (typeof path !== "string") return;
       await invoke("save_text_file", { path, text: buddyGenerated.code });
-      toast("Generated code saved", path);
+      toast(w.t("Export"), path);
     } catch (error) {
       toast("Could not save generated code", String(error));
     }
@@ -4218,7 +4759,7 @@ async function nativeSaveText(
   const path = await save({ defaultPath, filters });
   if (typeof path !== "string") return false;
   await invoke("save_text_file", { path, text });
-  toast("File exported", path);
+  toast(w.t("Export"), path);
   return true;
 }
 
@@ -4352,7 +4893,7 @@ function patchImportExport(): void {
         w.renderJsonRecents?.();
         w.renderFileMenuJsonRecents?.();
       }
-      toast("Imported file", saved.name);
+      toast(w.t("Imported file"), saved.name);
     } catch (error) {
       toast("Could not import file", String(error));
     }
@@ -4417,10 +4958,10 @@ function patchMockGeneration(): void {
       n: shape.rootArray || shape.arrayKey ? count : 1,
       seed
     };
+    setMockRuntimeResponse(shape.ep, payload);
     evalGlobal("activeMockTab = 'response'");
     w.closeMockGenerate?.();
     w.renderMockEndpoint?.(evalGlobal<number>("activeMockEndpointIndex") || 0);
-    void flushMockSave();
     toast(
       "Mock data generated",
       `${shape.ep.method} ${shape.ep.path} · ${count} record${count === 1 ? "" : "s"}`
@@ -4462,6 +5003,8 @@ function patchStreamFlow(): void {
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
     buddyStreamPending = 0;
+    buddyStreamFocusLine = null;
+    resetStreamRate();
     buddyConversation = snapshot.conversation;
     buddyAuditEntries = snapshot.audit ?? [];
     buddyAuditActive = true;
@@ -4510,7 +5053,10 @@ function patchStreamFlow(): void {
       });
       if (typeof selected !== "string") return;
       await openStreamPath(selected);
-      toast("Opened stream", selected.split(/[\\/]/).pop() ?? selected);
+      toast(
+        w.t("Opened JSONL file"),
+        selected.split(/[\\/]/).pop() ?? selected
+      );
     } catch (error) {
       toast("Could not open stream", String(error));
     }
@@ -4539,6 +5085,7 @@ function patchStreamFlow(): void {
       buddyStreamFollowing = null;
     }
     originalToggleMonitorPause();
+    resetStreamRate();
     const live = !file.paused;
     renderRealStreamSource(live);
     renderRealStreamEvents(live);
@@ -4553,6 +5100,14 @@ function patchStreamFlow(): void {
 
   w.deleteMonitorFile = async (id: string) => {
     try {
+      if (buddyStreamFollowing === id) {
+        try {
+          await invoke("stop_stream_follow", { path: id });
+        } catch {
+          // The watcher may already be closed.
+        }
+        buddyStreamFollowing = null;
+      }
       originalDeleteMonitorFile(id);
       const remaining = await invoke<RecentStream[]>("remove_recent_stream", {
         path: id
@@ -4563,6 +5118,8 @@ function patchStreamFlow(): void {
         buddyStreamEvents = [];
         buddyConversation = null;
         buddyStreamPending = 0;
+        buddyStreamFocusLine = null;
+        resetStreamRate();
         buddyAuditEntries = [];
         buddyAuditActive = false;
       }
@@ -4614,8 +5171,12 @@ function startStreamEventBridge(): void {
     if (!buddyStreamSnapshot || payload.path !== buddyStreamSnapshot.path) return;
     if (payload.reset) {
       buddyStreamEvents = payload.events;
-      toast("Stream reloaded", payload.path.split(/[\\/]/).pop() ?? payload.path);
+      buddyStreamPending = 0;
+      buddyStreamFocusLine = null;
+      resetStreamRate();
+      toast(w.t("Stream reloaded"), payload.path.split(/[\\/]/).pop() ?? payload.path);
     } else {
+      recordStreamTraffic(payload.events.length);
       buddyStreamEvents = [...buddyStreamEvents, ...payload.events];
       const cutoff = buddyStreamEvents.length - 10000;
       if (cutoff > 0) buddyStreamEvents = buddyStreamEvents.slice(cutoff);
@@ -4654,14 +5215,14 @@ function startStreamEventBridge(): void {
         renderRealStreamSource(!file.paused);
       });
       const edge = document.getElementById("edgeText");
-      if (edge && !file.paused) edge.textContent = "Following live edge";
+      if (edge && !file.paused) edge.textContent = w.t("Following live edge");
     } else if (code) {
       buddyStreamPending += payload.events.length;
       const edge = document.getElementById("edgeText");
       if (edge) {
         edge.textContent = file.paused
-          ? "Paused · follow to resume"
-          : `${buddyStreamPending.toLocaleString("en-US")} new events · click to follow`;
+          ? w.t("Paused · follow to resume")
+          : streamPendingText(buddyStreamPending);
       }
     }
   });
@@ -4704,6 +5265,10 @@ interface BridgeMockProject {
 
 let mockKnownIds = new Set<string>();
 let mockServerRunning = false;
+let mockRunningProjects = new Set<string>();
+let mockRunningProjectsKnown = false;
+let mockServerStartedAt: number | null = null;
+let mockRequestCount = 0;
 let mockRequestLogs: MockRequestLog[] = [];
 let mockSaveTimer: number | null = null;
 let mockSaveChain: Promise<void> = Promise.resolve();
@@ -4844,7 +5409,8 @@ function mockEndpointToBridge(endpoint: MockEndpoint): BridgeMockEndpoint {
     name: endpoint.name,
     delayMs: endpoint.delayMs ?? 0,
     enabled: endpoint.enabled !== false,
-    response: mockResponseText(endpoint.response)
+    response: mockResponseText(endpoint.response),
+    importedFrom: endpoint.importedFrom ?? undefined
   };
 }
 
@@ -4866,7 +5432,9 @@ function mockProjectToBridge(
 }
 
 function mockParseResponse(endpoint: BridgeMockEndpoint): unknown {
-  const raw = endpoint.generated ?? endpoint.response ?? "";
+  // Generated data is a session-only runtime response; project files keep the
+  // static response so reopening never stores stale generated records.
+  const raw = endpoint.response ?? "";
   if (typeof raw !== "string") return raw;
   if (!raw.trim()) return null;
   try {
@@ -4885,16 +5453,20 @@ function mockProjectToBackend(project: BridgeMockProject): MockProject {
     slug: project.slug || "",
     updatedAt: project.updatedAt ?? new Date().toISOString(),
     schemaCount: project.schemaCount ?? 1,
-    endpoints: project.endpoints.map((endpoint) => ({
-      id: endpoint.id || mockUuid(),
-      method: endpoint.method,
-      path: endpoint.path,
-      name: endpoint.name || `${endpoint.method} ${endpoint.path}`,
-      status: Number(endpoint.status) || 200,
-      delayMs: Number(endpoint.delayMs) || 0,
-      enabled: endpoint.enabled !== false,
-      response: mockParseResponse(endpoint)
-    }))
+    endpoints: project.endpoints.map((endpoint) => {
+      if (!endpoint.id) endpoint.id = mockUuid();
+      return {
+        id: endpoint.id,
+        method: endpoint.method,
+        path: endpoint.path,
+        name: endpoint.name || `${endpoint.method} ${endpoint.path}`,
+        status: Number(endpoint.status) || 200,
+        delayMs: Number(endpoint.delayMs) || 0,
+        enabled: endpoint.enabled !== false,
+        response: mockParseResponse(endpoint),
+        importedFrom: endpoint.importedFrom
+      };
+    })
   };
 }
 
@@ -4903,6 +5475,22 @@ function mockUuid(): string {
     return crypto.randomUUID();
   }
   return `mock-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function setMockRuntimeResponse(
+  endpoint: BridgeMockEndpoint | null,
+  response: unknown
+): void {
+  if (!endpoint) return;
+  const project = mockCurrentProject();
+  if (!project) return;
+  void invoke("set_mock_runtime_response", {
+    projectId: project.id,
+    endpointId: endpoint.id,
+    response
+  }).catch((error) => {
+    toast("Could not update mock response", String(error));
+  });
 }
 
 function mockAppIsMockView(): boolean {
@@ -4925,9 +5513,10 @@ function renderMockLogs(): void {
   const host = document.getElementById("mockLogRows");
   if (!host) return;
   const project = mockCurrentProject();
-  const logs = project
-    ? mockRequestLogs.filter((entry) => entry.projectId === project.id).slice(0, 12)
+  const projectLogs = project
+    ? mockRequestLogs.filter((entry) => entry.projectId === project.id)
     : [];
+  const logs = projectLogs.slice(0, 12);
   host.innerHTML = logs.length
     ? logs
         .map(
@@ -4947,12 +5536,71 @@ function renderMockLogs(): void {
   const count = host.parentElement?.querySelector(
     ".mock-logs-head > span:last-child"
   );
-  if (count) count.textContent = String(mockRequestLogs.length);
+  if (count) count.textContent = String(projectLogs.length);
+  updateMockInspectorStats();
+}
+
+function setMockServerStatus(status: MockServerStatus): void {
+  mockServerRunning = status.running;
+  if (Array.isArray(status.runningProjects)) {
+    mockRunningProjectsKnown = true;
+    mockRunningProjects = new Set(status.runningProjects);
+  } else {
+    mockRunningProjectsKnown = false;
+    mockRunningProjects = new Set();
+  }
+  const uptime = Math.max(0, Number(status.uptimeSeconds) || 0);
+  mockServerStartedAt = status.running
+    ? Date.now() - uptime * 1000
+    : null;
+  if (typeof status.totalRequests === "number") {
+    mockRequestCount = Math.max(0, status.totalRequests);
+  }
+}
+
+function mockClockText(seconds: number): string {
+  const bounded = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(bounded / 3600);
+  const minutes = Math.floor((bounded % 3600) / 60);
+  const rest = bounded % 60;
+  return [hours, minutes, rest]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
+function updateMockInspectorStats(): void {
+  const requestCount = mockRequestCount;
+  const statusRequest = document.querySelector<HTMLElement>(
+    ".status-mock .status-right > .status-item:last-child"
+  );
+  const statusText = statusRequest?.firstChild;
+  if (statusText && statusText.nodeType === Node.TEXT_NODE) {
+    statusText.nodeValue = `${requestCount} `;
+  }
+  const rows = document.querySelectorAll<HTMLElement>(
+    ".mock-inspector .mock-server-stats > div"
+  );
+  if (!rows.length) return;
+  const current = mockCurrentProject();
+  const projectRunning = current ? current.running : false;
+  const uptime = mockServerRunning && projectRunning && mockServerStartedAt
+    ? (Date.now() - mockServerStartedAt) / 1000
+    : 0;
+  const clock = rows[0]?.querySelector("b");
+  if (clock) clock.textContent = mockClockText(uptime);
+  const requests = rows[1]?.querySelector("b");
+  if (requests) requests.textContent = String(requestCount);
 }
 
 function applyMockRunningState(): void {
   const projects = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS");
-  for (const project of projects) project.running = mockServerRunning;
+  for (const project of projects) {
+    project.running =
+      mockServerRunning &&
+      (mockRunningProjectsKnown
+        ? mockRunningProjects.has(project.id)
+        : true);
+  }
   if (!mockAppIsMockView()) return;
   if (mockPage() === "projects") {
     w.renderMockProjects?.();
@@ -4960,6 +5608,7 @@ function applyMockRunningState(): void {
     w.updateMockProjectUI?.();
     renderMockLogs();
   }
+  updateMockInspectorStats();
 }
 
 function seedMockProjects(
@@ -4967,12 +5616,24 @@ function seedMockProjects(
   status: MockServerStatus,
   logs: MockRequestLog[]
 ): void {
-  mockServerRunning = status.running;
+  setMockServerStatus(status);
   mockKnownIds = new Set(projects.map((project) => project.id));
   mockRequestLogs = logs;
+  if (typeof status.totalRequests !== "number") {
+    mockRequestCount = logs.length;
+  }
+  const runningIds = new Set(
+    Array.isArray(status.runningProjects)
+      ? status.runningProjects
+      : status.running
+        ? projects.map((project) => project.id)
+        : []
+  );
   const list = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS");
   list.length = 0;
-  for (const project of projects) list.push(mockProjectToBridge(project, status.running));
+  for (const project of projects) {
+    list.push(mockProjectToBridge(project, runningIds.has(project.id)));
+  }
   const previous = evalGlobal<string | null>("activeMockProjectId");
   const active = projects.some((project) => project.id === previous)
     ? previous
@@ -4987,20 +5648,30 @@ function seedMockProjects(
   }
 }
 
-async function startMockServerToggle(): Promise<void> {
+async function setMockProjectRunning(
+  projectId: string,
+  running: boolean
+): Promise<void> {
   let status: MockServerStatus;
   try {
-    status = mockServerRunning
-      ? await invoke<MockServerStatus>("stop_mock_server")
-      : await invoke<MockServerStatus>("start_mock_server");
+    status = await invoke<MockServerStatus>("set_mock_project_running", {
+      projectId,
+      running
+    });
   } catch (error) {
-    toast("Could not start mock server", String(error));
+    toast(
+      running ? "Could not start mock server" : "Could not stop mock server",
+      String(error)
+    );
     return;
   }
-  mockServerRunning = status.running;
+  setMockServerStatus(status);
+  if (running && (status.totalRequests ?? 0) === 0) {
+    mockRequestLogs = [];
+  }
   applyMockRunningState();
   toast(
-    status.running ? w.t("mock.statusRunning") : w.t("mock.statusStopped"),
+    running ? w.t("mock.statusRunning") : w.t("mock.statusStopped"),
     status.url
   );
 }
@@ -5117,9 +5788,11 @@ function ensureMockEditor(): EditorView | null {
             );
             if (!endpoint) return;
             const text = update.state.doc.toString();
+            const hadGenerated = !!endpoint.generatedInfo;
             endpoint.response = text;
             endpoint.generated = undefined;
             endpoint.generatedInfo = undefined;
+            if (hadGenerated) setMockRuntimeResponse(endpoint, null);
             evalGlobal(`mockCurrentCode = ${JSON.stringify(text)}`);
             w.setText("mockLineCount", update.state.doc.lines);
             w.setText(
@@ -5488,6 +6161,27 @@ function buddyOpenApiProjectName(imported: BuddyOpenApiImport): string {
   return name;
 }
 
+function openApiUiText(english: string, chinese: string): string {
+  return viewLanguageIsZh() ? chinese : english;
+}
+
+const OPENAPI_REASONS_ZH: Record<string, string> = {
+  "path must start with /": "路径必须以 / 开头",
+  "invalid path item": "无效的路径项",
+  "path item uses $ref": "路径项使用了 $ref",
+  "invalid operation": "无效的操作",
+  "no responses": "没有响应定义",
+  "no 2xx response": "没有 2xx 响应",
+  "invalid response": "无效的响应",
+  "response uses $ref": "响应使用了 $ref",
+  "no JSON example response": "没有 JSON 示例响应",
+  "no inline JSON example": "没有内联 JSON 示例"
+};
+
+function openApiReasonText(reason: string): string {
+  return viewLanguageIsZh() ? OPENAPI_REASONS_ZH[reason] ?? reason : reason;
+}
+
 function buddyOpenApiReport(): void {
   const box = document.getElementById("schemaError");
   if (!box || !buddyOpenApi) return;
@@ -5498,12 +6192,18 @@ function buddyOpenApiReport(): void {
     return;
   }
   const prefix = buddyOpenApi.operations.length
-    ? `Skipped ${skipped.length} endpoint${skipped.length === 1 ? "" : "s"}: `
-    : "No importable endpoints. ";
+    ? openApiUiText(
+        `Skipped ${skipped.length} endpoint${skipped.length === 1 ? "" : "s"}: `,
+        `已跳过 ${skipped.length} 个接口：`
+      )
+    : openApiUiText("No importable endpoints. ", "没有可导入的接口。");
   box.textContent =
     prefix +
     skipped
-      .map((entry) => `${entry.endpoint} (${entry.reason})`)
+      .map(
+        (entry) =>
+          `${entry.endpoint} (${openApiReasonText(entry.reason)})`
+      )
       .join(" · ");
   box.hidden = false;
 }
@@ -5515,7 +6215,12 @@ function applyBuddyOpenApi(fileName: string, doc: Record<string, any>): void {
   const skipped: BuddyOpenApiSkip[] = [];
   const paths = doc.paths;
   if (!paths || typeof paths !== "object" || Array.isArray(paths)) {
-    w.showSchemaError?.("The OpenAPI document has no paths.");
+    w.showSchemaError?.(
+      openApiUiText(
+        "The OpenAPI document has no paths.",
+        "OpenAPI 文档没有 paths 定义。"
+      )
+    );
     return;
   }
   for (const [rawPath, pathItem] of Object.entries(
@@ -5591,7 +6296,10 @@ function applyBuddyOpenApi(fileName: string, doc: Record<string, any>): void {
   w.setText?.("schemaFileName", fileName);
   w.setText?.(
     "schemaFileMeta",
-    `${operations.length} operation${operations.length === 1 ? "" : "s"} · ${version}`
+    openApiUiText(
+      `${operations.length} operation${operations.length === 1 ? "" : "s"} · ${version}`,
+      `${operations.length} 个操作 · ${version}`
+    )
   );
   const fileBox = document.getElementById("schemaFile");
   if (fileBox) fileBox.hidden = false;
@@ -5733,13 +6441,55 @@ function importBuddyOpenApi(): boolean {
   if (startIndex > 0) w.renderMockEndpoints?.(startIndex);
   const skipped = buddyOpenApi.skipped.length;
   toast(
-    `Imported ${endpoints.length} endpoint${endpoints.length === 1 ? "" : "s"}`,
+    openApiUiText(
+      `Imported ${endpoints.length} endpoint${endpoints.length === 1 ? "" : "s"}`,
+      `已导入 ${endpoints.length} 个接口`
+    ),
     skipped
-      ? `${skipped} endpoint${skipped === 1 ? "" : "s"} skipped · ${buddyOpenApi.fileName}`
+      ? openApiUiText(
+          `${skipped} endpoint${skipped === 1 ? "" : "s"} skipped · ${buddyOpenApi.fileName}`,
+          `${skipped} 个接口已跳过 · ${buddyOpenApi.fileName}`
+        )
       : buddyOpenApi.fileName
   );
   buddyOpenApi = null;
   return true;
+}
+
+function hasRemoteSchemaRef(root: unknown): boolean {
+  const dataKeys = new Set([
+    "example",
+    "examples",
+    "default",
+    "const",
+    "enum"
+  ]);
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  let visited = 0;
+  while (stack.length && visited < 50000) {
+    visited += 1;
+    const value = stack.pop();
+    if (!value || typeof value !== "object") continue;
+    if (seen.has(value as object)) continue;
+    seen.add(value as object);
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push(item);
+      continue;
+    }
+    const schema = value as Record<string, unknown>;
+    if (
+      typeof schema.$ref === "string" &&
+      !schema.$ref.trim().startsWith("#")
+    ) {
+      return true;
+    }
+    for (const [key, child] of Object.entries(schema)) {
+      if (dataKeys.has(key)) continue;
+      if (child && typeof child === "object") stack.push(child);
+    }
+  }
+  return false;
 }
 
 function patchOpenApiImport(): void {
@@ -5768,12 +6518,20 @@ function patchOpenApiImport(): void {
     w.clearSchemaFile?.();
     if (file.size > 10 * 1024 * 1024) {
       w.showSchemaError?.(
-        "This file is larger than 10 MB. Choose a smaller schema."
+        openApiUiText(
+          "This file is larger than 10 MB. Choose a smaller schema.",
+          "文件超过 10 MB，请选择更小的 Schema。"
+        )
       );
       return;
     }
     if (typeof file.text !== "function") {
-      w.showSchemaError?.("This browser cannot read the selected file.");
+      w.showSchemaError?.(
+        openApiUiText(
+          "This browser cannot read the selected file.",
+          "当前环境无法读取所选文件。"
+        )
+      );
       return;
     }
     const name = file.name || "schema.json";
@@ -5782,7 +6540,12 @@ function patchOpenApiImport(): void {
     try {
       text = await file.text();
     } catch (error) {
-      w.showSchemaError?.(`Could not read ${name}: ${String(error)}`);
+      w.showSchemaError?.(
+        openApiUiText(
+          `Could not read ${name}: ${String(error)}`,
+          `无法读取 ${name}：${String(error)}`
+        )
+      );
       return;
     }
     let root: unknown;
@@ -5790,24 +6553,34 @@ function patchOpenApiImport(): void {
       try {
         root = await invoke<unknown>("parse_yaml_document", { text });
       } catch (error) {
-        w.showSchemaError?.(`Could not parse ${name}: ${String(error)}`);
+        w.showSchemaError?.(
+          openApiUiText(
+            `Could not parse ${name}: ${String(error)}`,
+            `无法解析 ${name}：${String(error)}`
+          )
+        );
         return;
       }
     } else {
       try {
         root = JSON.parse(text);
       } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
         w.showSchemaError?.(
-          `Could not parse ${name}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
+          openApiUiText(
+            `Could not parse ${name}: ${detail}`,
+            `无法解析 ${name}：${detail}`
+          )
         );
         return;
       }
     }
     if (!root || typeof root !== "object" || Array.isArray(root)) {
       w.showSchemaError?.(
-        "The file must contain a JSON Schema or OpenAPI object."
+        openApiUiText(
+          "The file must contain a JSON Schema or OpenAPI object.",
+          "文件必须包含 JSON Schema 或 OpenAPI 对象。"
+        )
       );
       return;
     }
@@ -5817,7 +6590,10 @@ function patchOpenApiImport(): void {
     }
     if (yaml) {
       w.showSchemaError?.(
-        `${name} is YAML but is not an OpenAPI / Swagger document.`
+        openApiUiText(
+          `${name} is YAML but is not an OpenAPI / Swagger document.`,
+          `${name} 是 YAML，但不是 OpenAPI / Swagger 文档。`
+        )
       );
       return;
     }
@@ -5831,7 +6607,19 @@ function patchOpenApiImport(): void {
       Object.keys(definitions).length > 1000
     ) {
       w.showSchemaError?.(
-        `This schema has more than 1,000 definitions. Split it into smaller files before importing.`
+        openApiUiText(
+          "This schema has more than 1,000 definitions. Split it into smaller files before importing.",
+          "此 Schema 超过 1,000 个定义，请拆分为更小的文件后再导入。"
+        )
+      );
+      return;
+    }
+    if (hasRemoteSchemaRef(root)) {
+      w.showSchemaError?.(
+        openApiUiText(
+          "Remote $ref is not supported. Use references inside this file.",
+          "不支持远程 $ref，请使用此文件内的引用。"
+        )
       );
       return;
     }
@@ -5890,12 +6678,17 @@ function patchOpenApiImport(): void {
     }
     const skipped = buddyOpenApi.skipped.length;
     const summary = selected.length
-      ? `${selected.length} operation${selected.length === 1 ? "" : "s"} · ${
-          skipped ? `${skipped} skipped` : "all importable"
-        }`
+      ? openApiUiText(
+          `${selected.length} operation${selected.length === 1 ? "" : "s"} · ${
+            skipped ? `${skipped} skipped` : "all importable"
+          }`,
+          `${selected.length} 个操作 · ${
+            skipped ? `${skipped} 个跳过` : "全部可导入"
+          }`
+        )
       : buddyOpenApi.operations.length
-        ? "Select at least one operation"
-        : "No importable endpoints";
+        ? openApiUiText("Select at least one operation", "请选择至少一个操作")
+        : openApiUiText("No importable endpoints", "没有可导入的接口");
     w.setText?.("schemaSummary", summary);
     const target = document.getElementById(
       "schemaTargetProject"
@@ -5903,9 +6696,11 @@ function patchOpenApiImport(): void {
     const targetValue = state.pendingProject ? "" : target?.value || "__new__";
     w.setText?.(
       "schemaImportActionLabel",
-      state.pendingProject || targetValue === "__new__"
-        ? "Create project"
-        : "Import schema"
+      w.t(
+        state.pendingProject || targetValue === "__new__"
+          ? "Create project"
+          : "Import schema"
+      )
     );
     const mode =
       (document.getElementById("schemaMode") as HTMLSelectElement | null)
@@ -5913,22 +6708,37 @@ function patchOpenApiImport(): void {
     const baseInput = document.getElementById(
       "schemaBasePath"
     ) as HTMLInputElement | null;
-    let note = `Endpoints keep their method, path and inline JSON examples. Base path: ${
-      baseInput?.value || buddyOpenApi.basePath || "/"
-    }.`;
+    const basePath = baseInput?.value || buddyOpenApi.basePath || "/";
+    let note = openApiUiText(
+      `Endpoints keep their method, path and inline JSON examples. Base path: ${basePath}.`,
+      `接口将保留方法、路径和内联 JSON 示例。基础路径：${basePath}。`
+    );
     if (skipped) {
-      note += ` ${skipped} endpoint${
-        skipped === 1 ? "" : "s"
-      } skipped; see the report above.`;
+      note += openApiUiText(
+        ` ${skipped} endpoint${skipped === 1 ? "" : "s"} skipped; see the report above.`,
+        ` 已跳过 ${skipped} 个接口，详见上方报告。`
+      );
     }
     if (state.pendingProject) {
-      note += ` Import will create “${state.pendingProject.name}”.`;
+      note += openApiUiText(
+        ` Import will create “${state.pendingProject.name}”.`,
+        ` 导入将创建“${state.pendingProject.name}”。`
+      );
     } else if (targetValue === "__new__") {
-      note += " A new project will be created from this file.";
+      note += openApiUiText(
+        " A new project will be created from this file.",
+        " 将根据此文件创建新项目。"
+      );
     } else if (mode === "replace") {
-      note += " Replace removes the current endpoints before importing.";
+      note += openApiUiText(
+        " Replace removes the current endpoints before importing.",
+        " 替换模式会先移除当前接口。"
+      );
     } else {
-      note += " Append keeps existing endpoints and updates matching routes.";
+      note += openApiUiText(
+        " Append keeps existing endpoints and updates matching routes.",
+        " 追加模式会保留现有接口并更新相同路由。"
+      );
     }
     w.setText?.("schemaNote", note);
   };
@@ -5948,6 +6758,7 @@ function patchMockFlow(): void {
   const originalConfirmDeleteMockProject = w.confirmDeleteMockProject;
   const originalImportSchema = w.importSchema;
   const originalCreateMockEndpoint = w.createMockEndpoint;
+  const originalMockSchemaExportText = w.mockSchemaExportText;
   const originalOpenMockProject = w.openMockProject;
   const originalOpenMockProjects = w.openMockProjects;
 
@@ -5984,12 +6795,18 @@ function patchMockFlow(): void {
   };
 
   w.toggleMockServer = () => {
-    void startMockServerToggle();
+    const project = mockCurrentProject();
+    if (!project) return;
+    void setMockProjectRunning(project.id, !project.running);
   };
 
   w.toggleMockProjectServer = (id: string, event?: Event) => {
     if (event) event.stopPropagation();
-    void startMockServerToggle();
+    const project = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS").find(
+      (item) => item.id === id
+    );
+    if (!project) return;
+    void setMockProjectRunning(project.id, !project.running);
   };
 
   w.commitMockEndpointEdits = () => {
@@ -6014,6 +6831,16 @@ function patchMockFlow(): void {
 
   w.formatMockCode = () => {
     originalFormatMockCode();
+    const endpoint = evalGlobal<BridgeMockEndpoint | null>(
+      "getMockEndpoints()[activeMockEndpointIndex]"
+    );
+    if (endpoint?.generatedInfo && endpoint.generated) {
+      try {
+        setMockRuntimeResponse(endpoint, JSON.parse(endpoint.generated));
+      } catch {
+        // The generated payload is always JSON; leave the runtime untouched.
+      }
+    }
     void flushMockSave();
   };
 
@@ -6028,7 +6855,7 @@ function patchMockFlow(): void {
       "getMockEndpoints()[activeMockEndpointIndex]"
     );
     if (!project || !endpoint) return;
-    if (!mockServerRunning) {
+    if (!project.running) {
       toast("Mock server is stopped", "Start the project to send requests.");
       return;
     }
@@ -6085,10 +6912,69 @@ function patchMockFlow(): void {
       try {
         await invoke("delete_mock_project", { id: deleting });
         mockKnownIds.delete(deleting);
+        const status = await invoke<MockServerStatus>("mock_server_status");
+        setMockServerStatus(status);
+        applyMockRunningState();
       } catch (error) {
         toast("Could not delete mock project", String(error));
       }
     }
+  };
+
+  w.mockSchemaExportText = (
+    project: BridgeMockProject,
+    endpoints: BridgeMockEndpoint[],
+    includeExamples: boolean,
+    pretty: boolean
+  ) => {
+    if (typeof originalMockSchemaExportText !== "function") {
+      return originalMockSchemaExportText?.(
+        project,
+        endpoints,
+        includeExamples,
+        pretty
+      );
+    }
+    const definitions: Record<string, unknown> = {};
+    const properties: Record<string, unknown> = {};
+    const used = new Set<string>();
+    endpoints.forEach((endpoint) => {
+      const value = w.mockEndpointValue?.(endpoint);
+      const schema = w.mockInferSchema?.(value) ?? {};
+      let base = String(endpoint.name || `${endpoint.method} ${endpoint.path}`)
+        .replace(/[^A-Za-z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join("");
+      if (!base) base = `${endpoint.method}Response`;
+      if (!/^[A-Za-z_]/.test(base)) base = `Response${base}`;
+      let name = base;
+      let suffix = 2;
+      while (used.has(name)) {
+        name = `${base}${suffix}`;
+        suffix += 1;
+      }
+      used.add(name);
+      schema.title = endpoint.name || `${endpoint.method} ${endpoint.path}`;
+      if (includeExamples) schema.examples = [value];
+      definitions[name] = schema;
+      properties[`${endpoint.method} ${endpoint.path}`] = {
+        $ref: `#/$defs/${name}`
+      };
+    });
+    return JSON.stringify(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        title: project.name,
+        type: "object",
+        properties,
+        $defs: definitions
+      },
+      null,
+      pretty ? 2 : 0
+    );
   };
 
   w.importSchema = async () => {
@@ -6097,6 +6983,11 @@ function patchMockFlow(): void {
     );
     if (!importBuddyOpenApi()) originalImportSchema();
     const projects = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS");
+    for (const project of projects) {
+      for (const endpoint of project.endpoints) {
+        if (!endpoint.id) endpoint.id = mockUuid();
+      }
+    }
     try {
       for (const project of projects) {
         if (!before.has(project.id) || project.id === evalGlobal("activeMockProjectId")) {
@@ -6161,6 +7052,8 @@ function startMockEventBridge(): void {
   mockBridgeReady = true;
   void listen<MockRequestLog>("mock-request", (event) => {
     mockRequestLogs = [event.payload, ...mockRequestLogs].slice(0, 200);
+    mockRequestCount += 1;
+    updateMockInspectorStats();
     if (mockAppIsMockView() && mockPage() === "detail") renderMockLogs();
   });
 }
@@ -6278,6 +7171,7 @@ async function bootstrap(): Promise<void> {
     const data = await invoke<BootstrapData>("bootstrap");
     patchDocumentFunctions();
     patchSettingsPersistence();
+    patchClipboard();
     patchJsonDocumentFlow();
     patchCompareFlow();
     patchStreamFlow();
@@ -6285,6 +7179,19 @@ async function bootstrap(): Promise<void> {
     patchOpenApiImport();
     patchMockFlow();
     startMockEventBridge();
+    window.setInterval(updateMockInspectorStats, 1000);
+    window.setInterval(() => {
+      try {
+        const file = evalGlobal<BridgeStreamFile | null>(
+          "typeof getMonitorFile === 'function' ? getMonitorFile(activeMonitorFileId) : null"
+        );
+        if (!file || file.paused) return;
+        if (evalGlobal<string>("app.dataset.view") !== "monitor") return;
+        updateStreamRateChrome(file, true);
+      } catch {
+        // The monitor view may not be mounted.
+      }
+    }, 1000);
     patchAuditFlow();
     patchSearchReveal();
     installTreeView();
