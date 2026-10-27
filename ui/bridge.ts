@@ -206,7 +206,6 @@ monitorChromeStyle.textContent = `
   }
   .buddy-session-section.collapsed .buddy-session-head .i { transform: rotate(-90deg); }
   .buddy-session-body[hidden] { display: none !important; }
-  .audit-list .ai-action.ack { display: none !important; }
 `;
 document.head.appendChild(monitorChromeStyle);
 
@@ -2157,6 +2156,7 @@ interface BridgeStreamFile {
   mode: "source" | "chat";
   lines: number;
   lineLabel: string;
+  tail?: boolean;
   compressed?: string;
   decoded?: string;
   decodedMB: number;
@@ -2181,6 +2181,7 @@ let buddyStreamArchiveLoading = false;
 let buddyStreamArchiveExhausted = false;
 let buddyStreamArchiveLoaded = false;
 let buddyStreamFollowing: string | null = null;
+let buddyStreamOpenGeneration = 0;
 let buddyStreamRateSamples: { at: number; count: number }[] = [];
 let buddyStreamLastEventAt: number | null = null;
 let buddyOpenStreamPath: ((path: string) => Promise<void>) | null = null;
@@ -2247,21 +2248,18 @@ function streamLineLabel(value: number): string {
   return value.toLocaleString("en-US");
 }
 
+function streamLineLabelWithTail(value: number, tail?: boolean): string {
+  return `${streamLineLabel(value)}${tail ? "+" : ""}`;
+}
+
 function streamRatio(size: number, decoded: number): string {
   if (!size) return "—";
   const ratio = decoded / size;
   return `${ratio.toFixed(1)}×`;
 }
 
-function directoryOf(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  return index > 0 ? normalized.slice(0, index) : normalized;
-}
-
 function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
   const size = formatBytes(entry.size);
-  const decoded = formatBytes(entry.decodedSize);
   return {
     id: entry.path,
     name: entry.name,
@@ -2269,13 +2267,19 @@ function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
     paused: true,
     mode: "source",
     lines: entry.lines,
-    lineLabel: streamLineLabel(entry.lines),
+    lineLabel: streamLineLabelWithTail(entry.lines, entry.tail),
+    tail: entry.tail === true,
     compressed: entry.format === "zstd" ? size : undefined,
-    decoded: entry.format === "zstd" ? decoded : undefined,
+    decoded: entry.format === "zstd" ? formatBytes(entry.decodedSize) : undefined,
     decodedMB: entry.decodedSize / (1024 * 1024),
-    ratio: entry.format === "zstd" ? streamRatio(entry.size, entry.decodedSize) : undefined,
+    ratio:
+      entry.format === "zstd"
+        ? entry.tail
+          ? "—"
+          : streamRatio(entry.size, entry.decodedSize)
+        : undefined,
     size,
-    path: directoryOf(entry.path),
+    path: entry.path,
     origin: "local stream",
     opened: openedLabel(entry.openedAt),
     modified: new Date(entry.openedAt).toLocaleTimeString("en-GB", { hour12: false }),
@@ -2288,7 +2292,6 @@ function streamFileFromSnapshot(
   keepOpened?: BridgeStreamFile
 ): BridgeStreamFile {
   const size = formatBytes(snapshot.size);
-  const decoded = formatBytes(snapshot.decodedSize);
   const counts = streamLevelCounts(buddyStreamEvents);
   return {
     id: snapshot.path,
@@ -2297,13 +2300,19 @@ function streamFileFromSnapshot(
     paused: true,
     mode: "source",
     lines: snapshot.lines,
-    lineLabel: streamLineLabel(snapshot.lines),
+    lineLabel: streamLineLabelWithTail(snapshot.lines, snapshot.tail),
+    tail: snapshot.tail === true,
     compressed: snapshot.format === "zstd" ? size : undefined,
-    decoded: snapshot.format === "zstd" ? decoded : undefined,
+    decoded: snapshot.format === "zstd" ? formatBytes(snapshot.decodedSize) : undefined,
     decodedMB: snapshot.decodedSize / (1024 * 1024),
-    ratio: snapshot.format === "zstd" ? streamRatio(snapshot.size, snapshot.decodedSize) : undefined,
+    ratio:
+      snapshot.format === "zstd"
+        ? snapshot.tail
+          ? "—"
+          : streamRatio(snapshot.size, snapshot.decodedSize)
+        : undefined,
     size,
-    path: directoryOf(snapshot.path),
+    path: snapshot.path,
     origin: "local stream",
     opened: keepOpened?.opened ?? "Just now",
     modified: new Date().toLocaleTimeString("en-GB", { hour12: false }),
@@ -2593,6 +2602,16 @@ function getStreamPaused(): boolean {
   }
 }
 
+function stopBuddyStreamFollow(): number {
+  buddyStreamOpenGeneration += 1;
+  const path = buddyStreamFollowing;
+  buddyStreamFollowing = null;
+  if (path) {
+    void invoke("stop_stream_follow", { path }).catch(() => undefined);
+  }
+  return buddyStreamOpenGeneration;
+}
+
 function bindStreamScroll(): void {
   if (buddyStreamScrollBound) return;
   const host = document.getElementById("streamCode");
@@ -2615,11 +2634,7 @@ function bindStreamScroll(): void {
   if (edge) {
     (edge as HTMLElement).style.cursor = "pointer";
     edge.addEventListener("click", () => {
-      if (getStreamPaused()) {
-        void w.toggleMonitorPause?.();
-      } else {
-        scrollStreamToBottom();
-      }
+      scrollStreamToBottom();
     });
   }
 }
@@ -3275,452 +3290,9 @@ let trajectoryRenderTimer: number | null = null;
 let trajectoryTimelineFrame: number | null = null;
 let trajectoryPaintFrame: number | null = null;
 let trajectoryResetScroll = false;
+let trajectoryLastFilterQuery: string | null = null;
 let trajectoryStreamPath: string | null = null;
 
-const trajectoryStyle = document.createElement("style");
-trajectoryStyle.id = "buddy-trajectory-styles";
-trajectoryStyle.textContent = `
-  .buddy-trajectory { display: none; flex: 1; min-width: 0; background: var(--canvas-bg); }
-  .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .monitor-main,
-  .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .chat-main {
-    display: none !important;
-  }
-  .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .buddy-trajectory {
-    display: flex;
-  }
-  .trajectory-main {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .trajectory-toolbar {
-    flex: 0 0 37px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 0 14px;
-    background: var(--chrome);
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    border-radius: 0;
-    box-shadow: none;
-    user-select: none;
-  }
-  .trajectory-body {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px 9px;
-    overflow: hidden;
-  }
-  .trajectory-controls { display: flex; align-items: center; gap: 2px; }
-  .trajectory-stat {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 9.5px;
-    color: var(--ink-3);
-    white-space: nowrap;
-  }
-  .trajectory-stat .i { width: 12px; height: 12px; color: var(--ink-4); }
-  .trajectory-stat b {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 550;
-    color: var(--ink-2);
-  }
-  .trajectory-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 23px;
-    padding: 0 6px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--ink-3);
-    font-family: var(--font-ui);
-    font-size: 9.5px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .trajectory-toggle:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
-  .trajectory-toggle[aria-pressed="true"] {
-    border-color: var(--accent-ring);
-    background: var(--accent-soft);
-    color: var(--accent-2);
-  }
-  .trajectory-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .trajectory-toggle:disabled { opacity: .45; cursor: default; }
-  .trajectory-toggle .i { width: 12px; height: 12px; color: var(--ink-4); }
-  .trajectory-toggle[aria-pressed="true"] .i { color: var(--accent-2); }
-  .trajectory-toggle b {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 550;
-    color: var(--ink-2);
-  }
-  .trajectory-fold {
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .trajectory-fold .plus { display: none; }
-  .trajectory-toggle[aria-pressed="true"] .trajectory-fold .minus { display: none; }
-  .trajectory-toggle[aria-pressed="true"] .trajectory-fold .plus { display: inline; }
-  .trajectory-spacer { flex: 1; }
-  .trajectory-step-count { color: var(--ink-3); }
-  .trajectory-timeline {
-    flex: 0 0 60px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 4px;
-    padding: 6px 11px;
-    background: var(--card);
-    border: 1px solid var(--line-strong);
-    border-radius: 9px;
-    box-shadow: var(--shadow-node);
-    position: relative;
-    user-select: none;
-    touch-action: none;
-    cursor: crosshair;
-  }
-  .trajectory-timeline:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .trajectory-timeline.trajectory-dragging { cursor: ew-resize; }
-  .trajectory-timeline.trajectory-dragging .trajectory-span { pointer-events: none; }
-  .trajectory-lane { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 8px; }
-  .trajectory-lane-label {
-    font-size: 8.5px;
-    color: var(--ink-3);
-    text-align: right;
-    white-space: nowrap;
-  }
-  .trajectory-track {
-    position: relative;
-    height: 9px;
-    border-radius: 3px;
-    background: var(--hover);
-    overflow: hidden;
-    cursor: crosshair;
-  }
-  .trajectory-span {
-    position: absolute;
-    top: 1px;
-    z-index: 2;
-    height: 7px;
-    min-width: 3px;
-    border-radius: 1px;
-    background: var(--accent);
-    cursor: pointer;
-  }
-  .trajectory-span.user { background: var(--code-string); }
-  .trajectory-span.assistant { background: #8b6bd9; }
-  .trajectory-span.tool { background: var(--accent); }
-  .trajectory-span.error { background: var(--code-null); }
-  [data-theme="dark"] .trajectory-span.assistant { background: #b49aef; }
-  .trajectory-span:hover { filter: brightness(1.1); }
-  .trajectory-span.outside { opacity: .2; }
-  .trajectory-span.current {
-    z-index: 2;
-    box-shadow: 0 0 0 1px var(--card), 0 0 0 2px var(--accent);
-  }
-  .trajectory-span.search-dim { opacity: .16; }
-  .trajectory-range {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    z-index: 1;
-    min-width: 1px;
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
-    border-left: 1px solid var(--accent);
-    border-right: 1px solid var(--accent);
-    pointer-events: none;
-  }
-  .trajectory-range[hidden] { display: none; }
-  .trajectory-range[data-dragging="true"] {
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-  }
-  .trajectory-range-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 23px;
-    padding: 0 7px;
-    border: 1px solid var(--accent-ring);
-    border-radius: 5px;
-    background: var(--accent-soft);
-    color: var(--accent-2);
-    font-family: var(--font-ui);
-    font-size: 9px;
-    font-weight: 600;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .trajectory-range-badge:hover { border-color: var(--accent); }
-  .trajectory-range-badge[hidden] { display: none !important; }
-  .trajectory-range-badge .i { width: 10px; height: 10px; }
-  .trajectory-tip {
-    position: fixed;
-    z-index: 2000;
-    width: max-content;
-    max-width: 340px;
-    padding: 8px 10px;
-    border: 1px solid var(--line-strong);
-    border-radius: 7px;
-    background: var(--card);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
-    color: var(--ink-2);
-    font-size: 9.5px;
-    line-height: 1.55;
-    pointer-events: none;
-  }
-  .trajectory-tip[hidden] { display: none !important; }
-  .trajectory-tip-title { font-weight: 700; color: var(--ink); }
-  .trajectory-tip-time { font-family: var(--font-mono); font-size: 9px; color: var(--ink-3); }
-  .trajectory-tip-preview {
-    margin-top: 3px;
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--ink-3);
-  }
-  .trajectory-scroll {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    background: var(--card);
-    border: 1px solid var(--line-strong);
-    border-radius: 9px;
-    box-shadow: var(--shadow-node);
-  }
-  .trajectory-canvas { position: relative; width: 100%; }
-  .trajectory-row {
-    position: absolute;
-    left: 0;
-    right: 0;
-    width: 100%;
-    height: 46px;
-    display: grid;
-    grid-template-columns: 56px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 9px;
-    padding: 0 11px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    background: transparent;
-    color: var(--ink);
-    font-family: var(--font-ui);
-    text-align: left;
-    cursor: pointer;
-  }
-  .trajectory-row:hover { background: var(--hover); }
-  .trajectory-row.sel { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
-  .trajectory-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .trajectory-role {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    justify-self: start;
-    font-size: 8.5px;
-    font-weight: 650;
-    letter-spacing: .04em;
-    color: var(--ink-3);
-    white-space: nowrap;
-  }
-  .trajectory-role .i { width: 11px; height: 11px; }
-  .trajectory-role.assistant { color: #7b5cc7; }
-  .trajectory-role.tool { color: var(--accent-2); }
-  [data-theme="dark"] .trajectory-role.assistant { color: #b49aef; }
-  .trajectory-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .trajectory-title, .trajectory-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .trajectory-title { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-2); }
-  .trajectory-sub { font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); }
-  .trajectory-row.tool .trajectory-title { color: var(--accent-2); }
-  .trajectory-row.tool.error .trajectory-title { color: var(--code-null); }
-  .trajectory-row.summary { background: color-mix(in srgb, var(--hover) 58%, transparent); }
-  .trajectory-row.summary:hover { background: var(--hover-strong); }
-  .trajectory-row.summary .trajectory-role { color: var(--ink-4); }
-  .trajectory-row.summary .trajectory-title { color: var(--ink-3); }
-  .trajectory-row.summary .trajectory-title b { color: var(--ink-2); font-weight: 600; }
-  .trajectory-row.summary .trajectory-tail { color: var(--ink-3); }
-  .trajectory-tail {
-    font-family: var(--font-mono);
-    font-size: 8.5px;
-    color: var(--ink-4);
-    white-space: nowrap;
-  }
-  .trajectory-tail.err { color: var(--code-null); }
-  .trajectory-tail.pending { color: var(--accent-2); }
-  .trajectory-empty {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-    color: var(--ink-3);
-    font-size: 10px;
-    text-align: center;
-    line-height: 1.7;
-  }
-  .trajectory-empty[hidden] { display: none !important; }
-  .trajectory-inspector {
-    flex: 0 0 380px;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    background: var(--card-2);
-    border: 0;
-    border-left: 1px solid var(--line);
-    border-radius: 0;
-    box-shadow: none;
-    overflow: hidden;
-  }
-  .buddy-trajectory.inspector-hidden .trajectory-inspector,
-  .buddy-trajectory.inspector-hidden .cmp-splitter { display: none; }
-  .trajectory-inspector-head {
-    flex: 0 0 39px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  .trajectory-inspector-kind {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: .06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-  .trajectory-inspector-kind.user { color: var(--ink-3); }
-  .trajectory-inspector-kind.assistant { color: #7b5cc7; }
-  .trajectory-inspector-kind.tool { color: var(--accent-2); }
-  [data-theme="dark"] .trajectory-inspector-kind.assistant { color: #b49aef; }
-  .trajectory-inspector-meta { font-size: 9px; color: var(--ink-3); white-space: nowrap; }
-  .trajectory-inspector-head .spacer { flex: 1; }
-  .trajectory-inspector-close {
-    width: 22px;
-    height: 22px;
-    flex: 0 0 auto;
-    color: var(--ink-4);
-  }
-  .trajectory-inspector-close .i { color: var(--ink-4); }
-  .trajectory-inspector-close:hover { color: var(--ink-2); }
-  .trajectory-inspector-close:hover .i { color: var(--ink-2); }
-  .trajectory-tabs {
-    flex: 0 0 43px;
-    display: flex;
-    align-items: stretch;
-    gap: 2px;
-    padding: 0 8px;
-    background: var(--chrome);
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-  }
-  .trajectory-tab {
-    padding: 0 8px;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--ink-3);
-    font-family: var(--font-ui);
-    font-size: 10.5px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .trajectory-tab:hover { color: var(--ink); }
-  .trajectory-tab.on { color: var(--ink); border-bottom-color: var(--accent); }
-  .trajectory-inspector-body {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    margin: 10px 11px 11px;
-    padding: 10px;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    box-shadow: var(--shadow-sm);
-  }
-  .trajectory-detail-section { margin-bottom: 11px; }
-  .trajectory-detail-label {
-    margin-bottom: 4px;
-    font-size: 7.5px;
-    font-weight: 650;
-    letter-spacing: .07em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-  .trajectory-detail-value { font-size: 10.5px; line-height: 1.65; color: var(--ink-2); word-break: break-word; }
-  .trajectory-detail-value code { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink); }
-  .trajectory-pre {
-    margin: 0;
-    max-width: 100%;
-    overflow: auto;
-    padding: 8px 9px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--card-2);
-    color: var(--ink-2);
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .trajectory-markdown {
-    max-width: 100%;
-    padding: 8px 9px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--card-2);
-    color: var(--ink-2);
-    font-family: var(--font-ui);
-    font-size: 10px;
-    line-height: 1.65;
-    overflow-wrap: anywhere;
-  }
-  .trajectory-markdown p { margin: 0 0 6px; }
-  .trajectory-markdown p:last-child { margin-bottom: 0; }
-  .trajectory-markdown code {
-    padding: 1px 3px;
-    border-radius: 3px;
-    background: var(--hover-strong);
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-  }
-  .trajectory-status {
-    display: inline-block;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--hover-strong);
-    color: var(--ink-2);
-    font-size: 8.5px;
-    font-weight: 650;
-  }
-  .trajectory-status.err { color: var(--code-null); background: var(--accent-soft); }
-  .trajectory-status.pending { color: var(--accent-2); background: var(--accent-wash); }
-  .trajectory-meta-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px 10px;
-    color: var(--ink-3);
-    font-family: var(--font-mono);
-    font-size: 9px;
-  }
-  .trajectory-splitter { flex: 0 0 5px; }
-`;
-document.head.appendChild(trajectoryStyle);
 
 function trajectoryIsZh(): boolean {
   return document.getElementById("app")?.dataset.lang === "zh";
@@ -5116,57 +4688,6 @@ function updateTrajectoryLanguage(): void {
 function installTrajectoryView(): void {
   if (trajectoryInstalled) return;
   trajectoryInstalled = true;
-  const seg = document.querySelector(".monitor-mode");
-  if (seg && !seg.querySelector("[data-monitor-mode-btn='trajectory']")) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.monitorModeBtn = "trajectory";
-    button.innerHTML =
-      '<svg class="i" viewBox="0 0 24 24"><use href="#i-activity"/></svg><span id="buddyTrajectoryTabLabel">Trajectory</span>';
-    button.addEventListener("click", () => w.setMonitorMode("trajectory"));
-    seg.appendChild(button);
-  }
-  const content = document.querySelector(".workspace-content");
-  const chat = content?.querySelector(".chat-main");
-  if (content && !document.getElementById("buddyTrajectory")) {
-    const shell = document.createElement("div");
-    shell.id = "buddyTrajectory";
-    shell.className = "buddy-trajectory";
-    shell.setAttribute("aria-label", "Conversation trajectory");
-    shell.innerHTML = `<section class="trajectory-main">
-      <div class="trajectory-toolbar">
-        <span class="trajectory-controls">
-          <button type="button" class="trajectory-toggle" id="trajectoryDurationToggle" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><use href="#i-clock"/></svg><span id="trajectoryDurationLabel">Duration</span><b id="trajectoryDuration">—</b></button>
-          <button type="button" class="trajectory-toggle" id="trajectoryTurnsToggle" aria-pressed="false"><svg class="i trajectory-fold" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path class="minus" d="M5.2 8h5.6"/><path class="plus" d="M8 5.2v5.6"/></svg><span id="trajectoryTurnsLabel">Turns</span><b id="trajectoryTurns">0</b></button>
-          <button type="button" class="trajectory-toggle" id="trajectoryCallsToggle" aria-pressed="false"><svg class="i trajectory-fold" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path class="minus" d="M5.2 8h5.6"/><path class="plus" d="M8 5.2v5.6"/></svg><span id="trajectoryCallsLabel">Calls</span><b id="trajectoryCalls">0</b></button>
-        </span>
-        <span class="trajectory-spacer"></span>
-        <button type="button" class="trajectory-range-badge" id="trajectoryRangeBadge" hidden><span id="trajectoryRangeText">0</span><svg class="i" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
-        <span class="trajectory-stat"><b id="trajectoryStepCount">0 steps</b></span>
-      </div>
-      <div class="trajectory-body">
-        <div class="trajectory-timeline" id="trajectoryTimeline" tabindex="0"></div>
-        <div class="trajectory-scroll" id="trajectoryScroll">
-          <div class="trajectory-canvas" id="trajectoryRows"></div>
-          <div class="trajectory-empty" id="trajectoryEmpty">Open a JSONL file to inspect its trajectory.</div>
-        </div>
-      </div>
-    </section>
-    <div class="cmp-splitter trajectory-splitter" id="trajectorySplitter" title="Drag to resize"></div>
-    <aside class="trajectory-inspector" id="trajectoryInspector">
-      <div class="trajectory-inspector-head">
-        <span class="trajectory-inspector-kind" id="trajectoryInspectorKind">—</span>
-        <span class="trajectory-inspector-meta" id="trajectoryInspectorMeta"></span>
-        <span class="spacer"></span>
-        <button class="pane-btn trajectory-inspector-close" id="trajectoryInspectorClose" type="button" title="Close"><svg class="i sm" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
-      </div>
-      <div class="trajectory-tabs" id="trajectoryTabs"></div>
-      <div class="trajectory-inspector-body" id="trajectoryInspectorBody"></div>
-    </aside>
-    <div class="trajectory-tip" id="trajectoryTip" hidden></div>`;
-    if (chat) chat.insertAdjacentElement("afterend", shell);
-    else content.appendChild(shell);
-  }
   const rows = document.getElementById("trajectoryRows");
   if (rows) {
     rows.addEventListener("click", (event) => {
@@ -5395,9 +4916,19 @@ function installTrajectoryView(): void {
   };
 
   const originalApplyFilter = w.applyMonitorFilter;
+  trajectoryLastFilterQuery = String(
+    (document.getElementById("monitorFilter") as HTMLInputElement | null)?.value ?? ""
+  );
   w.applyMonitorFilter = () => {
+    const filter = document.getElementById("monitorFilter") as HTMLInputElement | null;
+    const query = String(filter?.value ?? "");
+    const queryChanged =
+      trajectoryLastFilterQuery !== null && query !== trajectoryLastFilterQuery;
+    trajectoryLastFilterQuery = query;
     originalApplyFilter();
-    if (trajectoryModeActive()) scheduleTrajectoryRender(60, true);
+    if (trajectoryModeActive() && queryChanged) {
+      scheduleTrajectoryRender(60, true);
+    }
   };
 
   updateTrajectoryLanguage();
@@ -8133,7 +7664,6 @@ function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
   const originalOpenMonitorFile = w.openMonitorFile;
-  const originalToggleMonitorPause = w.toggleMonitorPause;
   const originalDeleteMonitorFile = w.deleteMonitorFile;
   const originalOpenMonitorFileDialog = w.openMonitorFileDialog;
 
@@ -8146,14 +7676,7 @@ function patchStreamFlow(): void {
   };
 
   const openStreamPath = async (path: string) => {
-    if (buddyStreamFollowing) {
-      try {
-        await invoke("stop_stream_follow", { path: buddyStreamFollowing });
-      } catch {
-        // The stream may already be closed.
-      }
-      buddyStreamFollowing = null;
-    }
+    const generation = stopBuddyStreamFollow();
     const snapshot = await invoke<StreamSnapshot>("open_stream", { path });
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
@@ -8173,14 +7696,15 @@ function patchStreamFlow(): void {
     const existingIndex = files.findIndex((file) => file.id === snapshot.path);
     const existing = existingIndex >= 0 ? files[existingIndex] : undefined;
     const entry = streamFileFromSnapshot(snapshot, existing);
+    entry.paused = false;
     if (existingIndex >= 0) files.splice(existingIndex, 1);
     files.unshift(entry);
     evalGlobal(`activeMonitorFileId = ${JSON.stringify(entry.id)}`);
     originalOpenMonitorFile(entry.id);
-    renderRealStreamSource(false);
-    renderRealStreamEvents(false);
-    updateRealStreamChrome(entry, false);
-    renderConversation(false);
+    renderRealStreamSource(true);
+    renderRealStreamEvents(true);
+    updateRealStreamChrome(entry, true);
+    renderConversation(true);
     renderTrajectoryIfActive();
     renderAudit();
     bindStreamScroll();
@@ -8188,8 +7712,37 @@ function patchStreamFlow(): void {
       const host = document.getElementById("streamCode");
       if (!host) return;
       host.scrollTop = host.scrollHeight;
-      renderRealStreamSource(false);
+      renderRealStreamSource(true);
     });
+    try {
+      await invoke("start_stream_follow", { path: snapshot.path });
+    } catch (error) {
+      if (generation === buddyStreamOpenGeneration) {
+        entry.paused = true;
+        renderRealStreamSource(false);
+        renderRealStreamEvents(false);
+        updateRealStreamChrome(entry, false);
+        renderConversation(false);
+        renderTrajectoryIfActive();
+        toast("Could not follow stream", String(error));
+      }
+      return;
+    }
+    const app = document.getElementById("app") as HTMLElement | null;
+    if (
+      generation !== buddyStreamOpenGeneration ||
+      app?.dataset.view !== "monitor" ||
+      app.dataset.monitorPage !== "detail" ||
+      buddyStreamSnapshot?.path !== snapshot.path
+    ) {
+      void invoke("stop_stream_follow", { path: snapshot.path }).catch(
+        () => undefined
+      );
+      return;
+    }
+    buddyStreamFollowing = snapshot.path;
+    entry.paused = false;
+    updateRealStreamChrome(entry, true);
   };
 
   buddyOpenStreamPath = openStreamPath;
@@ -8223,43 +7776,6 @@ function patchStreamFlow(): void {
       );
     } catch (error) {
       toast("Could not open stream", String(error));
-    }
-  };
-
-  w.toggleMonitorPause = async () => {
-    const file = evalGlobal<BridgeStreamFile | null>(
-      `getMonitorFile(${JSON.stringify(buddyStreamSnapshot?.path ?? "")})`
-    );
-    if (!buddyStreamSnapshot || !file) return;
-    const shouldFollow = file.paused;
-    if (shouldFollow) {
-      try {
-        await invoke("start_stream_follow", { path: buddyStreamSnapshot.path });
-        buddyStreamFollowing = buddyStreamSnapshot.path;
-      } catch (error) {
-        toast("Could not follow stream", String(error));
-        return;
-      }
-    } else {
-      try {
-        await invoke("stop_stream_follow", { path: buddyStreamSnapshot.path });
-      } catch {
-        // Ignore if the watcher has already stopped.
-      }
-      buddyStreamFollowing = null;
-    }
-    originalToggleMonitorPause();
-    resetStreamRate();
-    const live = !file.paused;
-    renderRealStreamSource(live);
-    renderRealStreamEvents(live);
-    updateRealStreamChrome(file, live);
-    renderConversation(live);
-    renderTrajectoryIfActive();
-    if (live) scrollStreamToBottom();
-    if (live) {
-      const code = document.getElementById("streamCode");
-      if (code) requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
     }
   };
 
@@ -8320,13 +7836,14 @@ function patchStreamFlow(): void {
   bindStreamScroll();
 
   w.openMonitorRecents = () => {
-    if (buddyStreamFollowing) {
-      void invoke("stop_stream_follow", { path: buddyStreamFollowing }).catch(
-        () => undefined
-      );
-      buddyStreamFollowing = null;
-    }
+    stopBuddyStreamFollow();
     originalOpenMonitorRecents();
+  };
+
+  const originalSetRail = w.setRail;
+  w.setRail = (name: string) => {
+    if (name !== "monitor") stopBuddyStreamFollow();
+    originalSetRail?.(name);
   };
 }
 
@@ -8348,7 +7865,9 @@ function startStreamEventBridge(): void {
       buddyStreamPending = 0;
       buddyStreamFocusLine = null;
       resetStreamRate();
-      toast(w.t("Stream reloaded"), payload.path.split(/[\\/]/).pop() ?? payload.path);
+      if (!payload.silent) {
+        toast(w.t("Stream reloaded"), payload.path.split(/[\\/]/).pop() ?? payload.path);
+      }
     } else {
       recordStreamTraffic(payload.events.length);
       buddyStreamEvents = [...buddyStreamEvents, ...payload.events];
@@ -8367,16 +7886,20 @@ function startStreamEventBridge(): void {
       ...buddyStreamSnapshot,
       lines: payload.totalLines,
       decodedSize: payload.decodedSize,
-      events: buddyStreamEvents
+      events: buddyStreamEvents,
+      tail: payload.tail ?? buddyStreamSnapshot.tail
     };
     const files = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES");
     const file = files.find((item) => item.id === buddyStreamSnapshot?.path);
     if (!file) return;
     file.lines = payload.totalLines;
-    file.lineLabel = streamLineLabel(payload.totalLines);
+    file.tail = buddyStreamSnapshot.tail === true;
+    file.lineLabel = streamLineLabelWithTail(payload.totalLines, file.tail);
     file.decodedMB = payload.decodedSize / (1024 * 1024);
     file.decoded = formatBytes(payload.decodedSize);
-    file.ratio = streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
+    file.ratio = file.tail
+      ? "—"
+      : streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
     file.counts = streamLevelCounts(buddyStreamEvents).labels;
     buddyConversation = payload.conversation ?? buddyConversation;
     if (payload.audit) {

@@ -4557,7 +4557,7 @@
     }
 
     .chat-inner {
-      max-width: 820px;
+      /* max-width: 820px; */
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -4610,6 +4610,7 @@
       display: flex;
       align-items: flex-start;
       gap: 9px;
+      min-width: 0;
     }
 
     .msg.user {
@@ -4676,6 +4677,8 @@
     }
 
     .bubble {
+      min-width: 0;
+      max-width: 100%;
       padding: 9px 12px;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -4684,6 +4687,15 @@
       font-size: 11.5px;
       line-height: 1.6;
       color: var(--ink-2);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .bubble p,
+    .bubble code,
+    .bubble b {
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .bubble p {
@@ -4719,6 +4731,7 @@
     }
 
     .parts {
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -4749,6 +4762,8 @@
     }
 
     .tool-card {
+      min-width: 0;
+      max-width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--card);
@@ -4757,6 +4772,7 @@
     }
 
     .tool-head {
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 7px;
@@ -4777,6 +4793,7 @@
 
     .tool-arg {
       min-width: 0;
+      flex: 1 1 auto;
       color: var(--ink-3);
       font-size: 9px;
       white-space: nowrap;
@@ -4806,11 +4823,14 @@
     }
 
     .tool-body {
+      min-width: 0;
       padding: 6px 9px 8px;
       border-top: 1px solid var(--line);
       font-family: var(--font-mono);
       font-size: 9px;
       color: var(--ink-3);
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .tool-body code {
@@ -4818,6 +4838,8 @@
     }
 
     .codeblock {
+      min-width: 0;
+      max-width: 100%;
       margin-top: 6px;
       border: 1px solid var(--line);
       border-radius: 7px;
@@ -5522,22 +5544,6 @@
     .ai-action:hover {
       background: var(--hover);
       color: var(--ink);
-    }
-
-    .ai-action.ack {
-      color: var(--accent-2);
-      border-color: rgba(212, 84, 31, .25);
-      background: var(--accent-soft);
-    }
-
-    [data-theme="dark"] .ai-action.ack {
-      color: var(--accent);
-    }
-
-    .audit-item.acked .ai-action.ack {
-      color: var(--success-fg);
-      background: var(--success-bg);
-      border-color: transparent;
     }
 
     .audit-empty {
@@ -8977,6 +8983,751 @@
     .app[data-view="code"][data-search-active="1"] .search-panel {
       display: flex;
     }
+
+    /* ============================================================
+       CONVERSATION TRAJECTORY
+       ============================================================ */
+
+    .buddy-trajectory {
+      display: none;
+      flex: 1;
+      min-width: 0;
+      background: var(--canvas-bg);
+    }
+
+    .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .monitor-main,
+    .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .chat-main {
+      display: none !important;
+    }
+
+    .app[data-view="monitor"][data-monitor-page="detail"][data-monitor-mode="trajectory"] .buddy-trajectory {
+      display: flex;
+    }
+
+    .trajectory-main {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .trajectory-toolbar {
+      flex: 0 0 37px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 14px;
+      background: var(--chrome);
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      box-shadow: none;
+      user-select: none;
+    }
+
+    .trajectory-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: hidden;
+    }
+
+    .trajectory-controls {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .trajectory-stat {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 9.5px;
+      color: var(--ink-3);
+      white-space: nowrap;
+    }
+
+    .trajectory-stat .i {
+      width: 12px;
+      height: 12px;
+      color: var(--ink-4);
+    }
+
+    .trajectory-stat b {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 550;
+      color: var(--ink-2);
+    }
+
+    .trajectory-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 23px;
+      padding: 0 6px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--ink-3);
+      font-family: var(--font-ui);
+      font-size: 9.5px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .trajectory-toggle:hover:not(:disabled) {
+      background: var(--hover);
+      color: var(--ink);
+    }
+
+    .trajectory-toggle[aria-pressed="true"] {
+      border-color: var(--accent-ring);
+      background: var(--accent-soft);
+      color: var(--accent-2);
+    }
+
+    .trajectory-toggle:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -1px;
+    }
+
+    .trajectory-toggle:disabled {
+      opacity: .45;
+      cursor: default;
+    }
+
+    .trajectory-toggle .i {
+      width: 12px;
+      height: 12px;
+      color: var(--ink-4);
+    }
+
+    .trajectory-toggle[aria-pressed="true"] .i {
+      color: var(--accent-2);
+    }
+
+    .trajectory-toggle b {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 550;
+      color: var(--ink-2);
+    }
+
+    .trajectory-fold {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .trajectory-fold .plus {
+      display: none;
+    }
+
+    .trajectory-toggle[aria-pressed="true"] .trajectory-fold .minus {
+      display: none;
+    }
+
+    .trajectory-toggle[aria-pressed="true"] .trajectory-fold .plus {
+      display: inline;
+    }
+
+    .trajectory-spacer {
+      flex: 1;
+    }
+
+    .trajectory-step-count {
+      color: var(--ink-3);
+    }
+
+    .trajectory-timeline {
+      flex: 0 0 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+      padding: 6px 11px;
+      background: var(--card);
+      position: relative;
+      user-select: none;
+      touch-action: none;
+      cursor: crosshair;
+    }
+
+    .trajectory-timeline:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .trajectory-timeline.trajectory-dragging {
+      cursor: ew-resize;
+    }
+
+    .trajectory-timeline.trajectory-dragging .trajectory-span {
+      pointer-events: none;
+    }
+
+    .trajectory-lane {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .trajectory-lane-label {
+      font-size: 8.5px;
+      color: var(--ink-3);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .trajectory-track {
+      position: relative;
+      height: 9px;
+      border-radius: 3px;
+      background: var(--hover);
+      overflow: hidden;
+      cursor: crosshair;
+    }
+
+    .trajectory-span {
+      position: absolute;
+      top: 1px;
+      z-index: 2;
+      height: 7px;
+      min-width: 3px;
+      border-radius: 1px;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    .trajectory-span.user {
+      background: var(--code-string);
+    }
+
+    .trajectory-span.assistant {
+      background: #8b6bd9;
+    }
+
+    .trajectory-span.tool {
+      background: var(--accent);
+    }
+
+    .trajectory-span.error {
+      background: var(--code-null);
+    }
+
+    [data-theme="dark"] .trajectory-span.assistant {
+      background: #b49aef;
+    }
+
+    .trajectory-span:hover {
+      filter: brightness(1.1);
+    }
+
+    .trajectory-span.outside {
+      opacity: .2;
+    }
+
+    .trajectory-span.current {
+      z-index: 2;
+      box-shadow: 0 0 0 1px var(--card), 0 0 0 2px var(--accent);
+    }
+
+    .trajectory-span.search-dim {
+      opacity: .16;
+    }
+
+    .trajectory-range {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      z-index: 1;
+      min-width: 1px;
+      background: color-mix(in srgb, var(--accent) 13%, transparent);
+      border-left: 1px solid var(--accent);
+      border-right: 1px solid var(--accent);
+      pointer-events: none;
+    }
+
+    .trajectory-range[hidden] {
+      display: none;
+    }
+
+    .trajectory-range[data-dragging="true"] {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+    }
+
+    .trajectory-range-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 23px;
+      padding: 0 7px;
+      border: 1px solid var(--accent-ring);
+      border-radius: 5px;
+      background: var(--accent-soft);
+      color: var(--accent-2);
+      font-family: var(--font-ui);
+      font-size: 9px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .trajectory-range-badge:hover {
+      border-color: var(--accent);
+    }
+
+    .trajectory-range-badge[hidden] {
+      display: none !important;
+    }
+
+    .trajectory-range-badge .i {
+      width: 10px;
+      height: 10px;
+    }
+
+    .trajectory-tip {
+      position: fixed;
+      z-index: 2000;
+      width: max-content;
+      max-width: 340px;
+      padding: 8px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--card);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+      color: var(--ink-2);
+      font-size: 9.5px;
+      line-height: 1.55;
+      pointer-events: none;
+    }
+
+    .trajectory-tip[hidden] {
+      display: none !important;
+    }
+
+    .trajectory-tip-title {
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .trajectory-tip-time {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--ink-3);
+    }
+
+    .trajectory-tip-preview {
+      margin-top: 3px;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--ink-3);
+    }
+
+    .trajectory-scroll {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      background: var(--card);
+    }
+
+    .trajectory-canvas {
+      position: relative;
+      width: 100%;
+    }
+
+    .trajectory-row {
+      position: absolute;
+      left: 0;
+      right: 0;
+      width: 100%;
+      height: 46px;
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      padding: 0 11px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--ink);
+      font-family: var(--font-ui);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .trajectory-row:hover {
+      background: var(--hover);
+    }
+
+    .trajectory-row.sel {
+      background: var(--accent-soft);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
+    .trajectory-row:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .trajectory-role {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      justify-self: start;
+      font-size: 8.5px;
+      font-weight: 650;
+      letter-spacing: .04em;
+      color: var(--ink-3);
+      white-space: nowrap;
+    }
+
+    .trajectory-role .i {
+      width: 11px;
+      height: 11px;
+    }
+
+    .trajectory-role.assistant {
+      color: #7b5cc7;
+    }
+
+    .trajectory-role.tool {
+      color: var(--accent-2);
+    }
+
+    [data-theme="dark"] .trajectory-role.assistant {
+      color: #b49aef;
+    }
+
+    .trajectory-copy {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .trajectory-title,
+    .trajectory-sub {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .trajectory-title {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--ink-2);
+    }
+
+    .trajectory-sub {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--ink-4);
+    }
+
+    .trajectory-row.tool .trajectory-title {
+      color: var(--accent-2);
+    }
+
+    .trajectory-row.tool.error .trajectory-title {
+      color: var(--code-null);
+    }
+
+    .trajectory-row.summary {
+      background: color-mix(in srgb, var(--hover) 58%, transparent);
+    }
+
+    .trajectory-row.summary:hover {
+      background: var(--hover-strong);
+    }
+
+    .trajectory-row.summary .trajectory-role {
+      color: var(--ink-4);
+    }
+
+    .trajectory-row.summary .trajectory-title {
+      color: var(--ink-3);
+    }
+
+    .trajectory-row.summary .trajectory-title b {
+      color: var(--ink-2);
+      font-weight: 600;
+    }
+
+    .trajectory-row.summary .trajectory-tail {
+      color: var(--ink-3);
+    }
+
+    .trajectory-tail {
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      color: var(--ink-4);
+      white-space: nowrap;
+    }
+
+    .trajectory-tail.err {
+      color: var(--code-null);
+    }
+
+    .trajectory-tail.pending {
+      color: var(--accent-2);
+    }
+
+    .trajectory-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--ink-3);
+      font-size: 10px;
+      text-align: center;
+      line-height: 1.7;
+    }
+
+    .trajectory-empty[hidden] {
+      display: none !important;
+    }
+
+    .trajectory-inspector {
+      flex: 0 0 380px;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--card-2);
+      border: 0;
+      border-left: 1px solid var(--line);
+      border-radius: 0;
+      box-shadow: none;
+      overflow: hidden;
+    }
+
+    .buddy-trajectory.inspector-hidden .trajectory-inspector,
+    .buddy-trajectory.inspector-hidden .cmp-splitter {
+      display: none;
+    }
+
+    .trajectory-inspector-head {
+      flex: 0 0 39px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .trajectory-inspector-kind {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .trajectory-inspector-kind.user {
+      color: var(--ink-3);
+    }
+
+    .trajectory-inspector-kind.assistant {
+      color: #7b5cc7;
+    }
+
+    .trajectory-inspector-kind.tool {
+      color: var(--accent-2);
+    }
+
+    [data-theme="dark"] .trajectory-inspector-kind.assistant {
+      color: #b49aef;
+    }
+
+    .trajectory-inspector-meta {
+      font-size: 9px;
+      color: var(--ink-3);
+      white-space: nowrap;
+    }
+
+    .trajectory-inspector-head .spacer {
+      flex: 1;
+    }
+
+    .trajectory-inspector-close {
+      width: 22px;
+      height: 22px;
+      flex: 0 0 auto;
+      color: var(--ink-4);
+    }
+
+    .trajectory-inspector-close .i {
+      color: var(--ink-4);
+    }
+
+    .trajectory-inspector-close:hover {
+      color: var(--ink-2);
+    }
+
+    .trajectory-inspector-close:hover .i {
+      color: var(--ink-2);
+    }
+
+    .trajectory-tabs {
+      flex: 0 0 43px;
+      display: flex;
+      align-items: stretch;
+      gap: 2px;
+      padding: 0 8px;
+      background: var(--chrome);
+      border-bottom: 1px solid var(--line);
+      overflow-x: auto;
+    }
+
+    .trajectory-tab {
+      padding: 0 8px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--ink-3);
+      font-family: var(--font-ui);
+      font-size: 10.5px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .trajectory-tab:hover {
+      color: var(--ink);
+    }
+
+    .trajectory-tab.on {
+      color: var(--ink);
+      border-bottom-color: var(--accent);
+    }
+
+    .trajectory-inspector-body {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      margin: 10px 11px 11px;
+      padding: 10px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .trajectory-detail-section {
+      margin-bottom: 11px;
+    }
+
+    .trajectory-detail-label {
+      margin-bottom: 4px;
+      font-size: 7.5px;
+      font-weight: 650;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .trajectory-detail-value {
+      font-size: 10.5px;
+      line-height: 1.65;
+      color: var(--ink-2);
+      word-break: break-word;
+    }
+
+    .trajectory-detail-value code {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--ink);
+    }
+
+    .trajectory-pre {
+      margin: 0;
+      max-width: 100%;
+      overflow: auto;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--card-2);
+      color: var(--ink-2);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .trajectory-markdown {
+      max-width: 100%;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--card-2);
+      color: var(--ink-2);
+      font-family: var(--font-ui);
+      font-size: 10px;
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+    }
+
+    .trajectory-markdown p {
+      margin: 0 0 6px;
+    }
+
+    .trajectory-markdown p:last-child {
+      margin-bottom: 0;
+    }
+
+    .trajectory-markdown code {
+      padding: 1px 3px;
+      border-radius: 3px;
+      background: var(--hover-strong);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+    }
+
+    .trajectory-status {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--hover-strong);
+      color: var(--ink-2);
+      font-size: 8.5px;
+      font-weight: 650;
+    }
+
+    .trajectory-status.err {
+      color: var(--code-null);
+      background: var(--accent-soft);
+    }
+
+    .trajectory-status.pending {
+      color: var(--accent-2);
+      background: var(--accent-wash);
+    }
+
+    .trajectory-meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 10px;
+      color: var(--ink-3);
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+
+    .trajectory-splitter {
+      flex: 0 0 5px;
+    }
   </style>
 </head>
 
@@ -9640,6 +10391,10 @@
                   viewBox="0 0 24 24">
                   <use href="#i-message" />
                 </svg>Chat</button>
+              <button type="button" data-monitor-mode-btn="trajectory" onclick="setMonitorMode('trajectory')"><svg
+                  class="i" viewBox="0 0 24 24">
+                  <use href="#i-activity" />
+                </svg><span id="buddyTrajectoryTabLabel">Trajectory</span></button>
             </div>
           </div>
 
@@ -9659,9 +10414,6 @@
                 oninput="applyMonitorFilter()"
                 onkeydown="if(event.key==='Escape'){this.value='';applyMonitorFilter();}" />
             </label>
-            <button class="tbtn" id="pauseBtn" onclick="toggleMonitorPause()"><svg class="i sm" viewBox="0 0 24 24">
-                <use href="#i-pause" />
-              </svg><span id="pauseLabel">Pause</span></button>
             <div class="monitor-more-wrap">
               <button class="tbtn icon-only" id="monitorMoreBtn" title="More" onclick="toggleMonitorMore(event)"
                 aria-haspopup="menu" aria-expanded="false"><svg class="i" viewBox="0 0 24 24">
@@ -10759,6 +11511,171 @@
             </aside>
           </div>
 
+          <!-- Conversation trajectory view -->
+          <div class="buddy-trajectory" id="buddyTrajectory" aria-label="Conversation trajectory">
+            <section class="trajectory-main">
+              <div class="trajectory-toolbar">
+                <span class="trajectory-controls">
+                  <button type="button" class="trajectory-toggle" id="trajectoryDurationToggle"
+                    aria-pressed="false"><svg class="i" viewBox="0 0 24 24">
+                      <use href="#i-clock" />
+                    </svg><span id="trajectoryDurationLabel">Duration</span><b id="trajectoryDuration">2m
+                      18s</b></button>
+                  <button type="button" class="trajectory-toggle" id="trajectoryTurnsToggle" aria-pressed="false"><svg
+                      class="i trajectory-fold" viewBox="0 0 16 16">
+                      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+                      <path class="minus" d="M5.2 8h5.6" />
+                      <path class="plus" d="M8 5.2v5.6" />
+                    </svg><span id="trajectoryTurnsLabel">Turns</span><b id="trajectoryTurns">4</b></button>
+                  <button type="button" class="trajectory-toggle" id="trajectoryCallsToggle" aria-pressed="false"><svg
+                      class="i trajectory-fold" viewBox="0 0 16 16">
+                      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+                      <path class="minus" d="M5.2 8h5.6" />
+                      <path class="plus" d="M8 5.2v5.6" />
+                    </svg><span id="trajectoryCallsLabel">Calls</span><b id="trajectoryCalls">7</b></button>
+                </span>
+                <span class="trajectory-spacer"></span>
+                <button type="button" class="trajectory-range-badge" id="trajectoryRangeBadge" hidden><span
+                    id="trajectoryRangeText">0</span><svg class="i" viewBox="0 0 24 24">
+                    <use href="#i-x" />
+                  </svg></button>
+                <span class="trajectory-stat"><b id="trajectoryStepCount">12 steps</b></span>
+              </div>
+              <div class="trajectory-body">
+                <div class="trajectory-timeline" id="trajectoryTimeline" tabindex="0">
+                  <div class="trajectory-lane"><span class="trajectory-lane-label">Input</span>
+                    <div class="trajectory-track">
+                      <div class="trajectory-range" hidden></div><span class="trajectory-span user"
+                        style="left:2%;width:max(3px, calc(5% - 2px))"></span><span class="trajectory-span user"
+                        style="left:52%;width:max(3px, calc(4% - 2px))"></span>
+                    </div>
+                  </div>
+                  <div class="trajectory-lane"><span class="trajectory-lane-label">Model</span>
+                    <div class="trajectory-track">
+                      <div class="trajectory-range" hidden></div><span class="trajectory-span assistant"
+                        style="left:8%;width:max(3px, calc(7% - 2px))"></span><span class="trajectory-span assistant"
+                        style="left:38%;width:max(3px, calc(9% - 2px))"></span><span class="trajectory-span assistant"
+                        style="left:72%;width:max(3px, calc(8% - 2px))"></span>
+                    </div>
+                  </div>
+                  <div class="trajectory-lane"><span class="trajectory-lane-label">Tools</span>
+                    <div class="trajectory-track">
+                      <div class="trajectory-range" hidden></div><span class="trajectory-span tool"
+                        style="left:16%;width:max(3px, calc(6% - 2px))"></span><span class="trajectory-span tool error"
+                        style="left:26%;width:max(3px, calc(9% - 2px))"></span><span class="trajectory-span tool"
+                        style="left:49%;width:max(3px, calc(5% - 2px))"></span><span class="trajectory-span tool"
+                        style="left:58%;width:max(3px, calc(4% - 2px))"></span><span class="trajectory-span tool"
+                        style="left:82%;width:max(3px, calc(6% - 2px))"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="trajectory-scroll" id="trajectoryScroll">
+                  <div class="trajectory-canvas" id="trajectoryRows" style="height:322px">
+                    <button type="button" class="trajectory-row user" data-trajectory-key="demo-user-1"
+                      style="top:0px"><span class="trajectory-role user"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-message" />
+                        </svg>User</span><span class="trajectory-copy"><span class="trajectory-title">Summarize this
+                          session and list the failing tests.</span><span
+                          class="trajectory-sub">10:42:18.204</span></span><span
+                        class="trajectory-tail">10:42:18</span></button>
+                    <button type="button" class="trajectory-row assistant" data-trajectory-key="demo-assistant-1"
+                      style="top:46px"><span class="trajectory-role assistant"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-sparkle" />
+                        </svg>Assistant</span><span class="trajectory-copy"><span class="trajectory-title">I'll inspect
+                          the failing suite first.</span><span class="trajectory-sub">claude-sonnet-5-5 · 2 tools ·
+                          10:42:19.104</span></span><span class="trajectory-tail">10:42:19</span></button>
+                    <button type="button" class="trajectory-row tool" data-trajectory-key="demo-tool-1"
+                      style="top:92px"><span class="trajectory-role tool"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-wrench" />
+                        </svg>Tool</span><span class="trajectory-copy"><span
+                          class="trajectory-title">read_file</span><span class="trajectory-sub">scripts/sync-ui.mjs →
+                          214 lines</span></span><span class="trajectory-tail">12 ms</span></button>
+                    <button type="button" class="trajectory-row tool error" data-trajectory-key="demo-tool-2"
+                      style="top:138px"><span class="trajectory-role tool"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-wrench" />
+                        </svg>Tool</span><span class="trajectory-copy"><span class="trajectory-title">shell</span><span
+                          class="trajectory-sub">npm test -- --runInBand → exit 1</span></span><span
+                        class="trajectory-tail err">error</span></button>
+                    <button type="button" class="trajectory-row assistant" data-trajectory-key="demo-assistant-2"
+                      style="top:184px"><span class="trajectory-role assistant"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-sparkle" />
+                        </svg>Assistant</span><span class="trajectory-copy"><span class="trajectory-title">The snapshot
+                          mismatch is in the trajectory toolbar.</span><span class="trajectory-sub">claude-sonnet-5-5 ·
+                          2 tools · 10:42:21.552</span></span><span class="trajectory-tail">10:42:21</span></button>
+                    <button type="button" class="trajectory-row tool" data-trajectory-key="demo-tool-3"
+                      style="top:230px"><span class="trajectory-role tool"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-wrench" />
+                        </svg>Tool</span><span class="trajectory-copy"><span
+                          class="trajectory-title">edit_file</span><span class="trajectory-sub">design/prototype.html →
+                          updated</span></span><span class="trajectory-tail">48 ms</span></button>
+                    <button type="button" class="trajectory-row assistant" data-trajectory-key="demo-assistant-3"
+                      style="top:276px"><span class="trajectory-role assistant"><svg class="i" viewBox="0 0 24 24">
+                          <use href="#i-sparkle" />
+                        </svg>Assistant</span><span class="trajectory-copy"><span class="trajectory-title">Updated the
+                          static trajectory shell and reran the checks.</span><span
+                          class="trajectory-sub">claude-sonnet-5-5 · 1 tool · 10:42:23.076</span></span><span
+                        class="trajectory-tail">10:42:23</span></button>
+                  </div>
+                  <div class="trajectory-empty" id="trajectoryEmpty" hidden>Open a JSONL file to inspect its trajectory.
+                  </div>
+                </div>
+              </div>
+            </section>
+            <div class="cmp-splitter trajectory-splitter" id="trajectorySplitter" title="Drag to resize"></div>
+            <aside class="trajectory-inspector" id="trajectoryInspector">
+              <div class="trajectory-inspector-head">
+                <span class="trajectory-inspector-kind tool" id="trajectoryInspectorKind">TOOL</span>
+                <span class="trajectory-inspector-meta" id="trajectoryInspectorMeta">Round 2 · Step 3</span>
+                <span class="spacer"></span>
+                <button class="pane-btn trajectory-inspector-close" id="trajectoryInspectorClose" type="button"
+                  title="Close"><svg class="i sm" viewBox="0 0 24 24">
+                    <use href="#i-x" />
+                  </svg></button>
+              </div>
+              <div class="trajectory-tabs" id="trajectoryTabs">
+                <button type="button" class="trajectory-tab on" data-trajectory-tab="overview">Overview</button>
+                <button type="button" class="trajectory-tab" data-trajectory-tab="params">Parameters</button>
+                <button type="button" class="trajectory-tab" data-trajectory-tab="result">Result</button>
+                <button type="button" class="trajectory-tab" data-trajectory-tab="schema">Schema</button>
+                <button type="button" class="trajectory-tab" data-trajectory-tab="timing">Timing</button>
+              </div>
+              <div class="trajectory-inspector-body" id="trajectoryInspectorBody">
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Hierarchy</div>
+                  <div class="trajectory-detail-value">Assistant message · Round 2 · Step 3</div>
+                </div>
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Status</div>
+                  <span class="trajectory-status">Completed</span>
+                </div>
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Arguments</div>
+                  <pre class="trajectory-pre">{
+  "path": "design/prototype.html"
+}</pre>
+                </div>
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Result</div>
+                  <pre class="trajectory-pre">Updated the static trajectory shell.</pre>
+                </div>
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Schema</div>
+                  <pre class="trajectory-pre">{
+  "type": "object",
+  "properties": {
+    "path": { "type": "string" }
+  }
+}</pre>
+                </div>
+                <div class="trajectory-detail-section">
+                  <div class="trajectory-detail-label">Timing</div>
+                  <div class="trajectory-meta-line"><span>10:42:21.552</span><span>48 ms</span><span>#L15</span></div>
+                </div>
+              </div>
+            </aside>
+            <div class="trajectory-tip" id="trajectoryTip" hidden></div>
+          </div>
+
           <!-- Side panes are moved into the active right sidebar (chat-side / live panel) -->
           <div id="paneHolder" style="display:none">
             <aside class="side-pane audit-pane" id="auditPane" data-side-pane="audit" aria-label="Audit warnings">
@@ -10790,8 +11707,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         path</button>
                     </div>
@@ -10813,8 +11728,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         command</button>
                     </div>
@@ -10836,8 +11749,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         target</button>
                     </div>
@@ -10859,8 +11770,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         target</button>
                     </div>
@@ -10882,8 +11791,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         path</button>
                     </div>
@@ -10905,8 +11812,6 @@
                     <div class="ai-actions">
                       <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw
                         event</button>
-                      <button class="ai-action ack"
-                        onclick="event.stopPropagation(); this.closest('.audit-item').classList.add('acked')">Acknowledge</button>
                       <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy
                         path</button>
                     </div>
@@ -12643,6 +13548,24 @@
       'Started': '开始',
       'Duration': '时长',
       'Turns': '轮次',
+      'Trajectory': '轨迹',
+      'Calls': '调用',
+      'Input': '输入',
+      'Model': '模型',
+      'Tools': '工具',
+      'User': '用户',
+      'Assistant': '助手',
+      'Tool': '工具',
+      'Overview': '概述',
+      'Parameters': '参数',
+      'Result': '结果',
+      'Timing': '计时',
+      'Hierarchy': '层级',
+      'Completed': '已完成',
+      'Assistant message': '助手消息',
+      'Conversation trajectory': '对话轨迹',
+      'Open a JSONL file to inspect its trajectory.': '打开 JSONL 文件以查看其轨迹。',
+      '12 steps': '12 步',
       'Messages': '消息',
       'Prompt': '提示',
       'Completion': '补全',
@@ -12664,7 +13587,6 @@
       'Shell execution': 'Shell 执行',
       'Network egress': '网络出站',
       'View raw event': '查看原始事件',
-      'Acknowledge': '确认',
       'Local audit': '本地审计',
       'Operations': '操作',
       'Choose which tool operations are recorded and surfaced in the Audit tab.': '选择记录并在审计标签中显示哪些工具操作。',
@@ -15222,7 +16144,7 @@ class Root {
         <div class="mon-file" onclick="openMonitorFile('${f.id}')">
           <span class="mon-file-name">
             <span class="mon-file-icon ${f.format}"><svg class="i" viewBox="0 0 24 24"><use href="#i-file"/></svg></span>
-            <span class="mon-file-copy"><b>${escHtml(f.name)}</b><small>${escHtml(f.path)} · ${escHtml(f.origin)}</small></span>
+            <span class="mon-file-copy"><b>${escHtml(f.name)}</b><small title="${escHtml(f.path)}">${escHtml(f.path)} · ${escHtml(f.origin)}</small></span>
           </span>
           <span class="fmt-badge ${f.format}">${zstd ? 'ZSTD' : 'JSONL'}</span>
           <span class="mon-file-num">${f.lineLabel}</span>
@@ -15250,7 +16172,7 @@ class Root {
     function openMonitorFile(id) {
       const file = getMonitorFile(id);
       if (!file) return;
-      startStream(file.format, false, file.mode, file);
+      startStream(file.format, true, file.mode, file);
     }
 
     function startStream(format, follow, mode, sourceFile) {
@@ -15308,6 +16230,8 @@ class Root {
       setText('stat4Value', live ? '18 lines/s' : file.modified);
 
       setText('lpPath', file.path);
+      const lpPath = document.getElementById('lpPath');
+      if (lpPath) lpPath.title = file.path;
       setText('lpFrame', zstd
         ? (live ? 'Frame 6 · appended 0.4s ago' : `Decoded 6 frames · last ${file.modified}`)
         : (live ? 'Appended 0.4s ago' : `Modified ${file.modified}`));
@@ -15327,11 +16251,6 @@ class Root {
       setText('monitorFormat', zstd ? (live ? 'zstd · frame 6' : 'zstd · 6 frames') : 'JSONL · UTF-8');
       setText('monitorLines', `${lines} lines`);
       setText('monitorSize', zstd ? `${file.decoded} decoded` : file.size);
-
-      const pauseBtn = document.getElementById('pauseBtn');
-      pauseBtn.querySelector('use').setAttribute('href', live ? '#i-pause' : '#i-play');
-      setText('pauseLabel', live ? 'Pause' : 'Follow');
-      pauseBtn.title = live ? 'Pause following' : 'Follow file';
 
       ['chatStatePill', 'chatSideState'].forEach(id => {
         const el = document.getElementById(id);
@@ -15441,11 +16360,12 @@ class Root {
     });
 
     function setMonitorMode(mode) {
-      if (mode !== 'chat' && mode !== 'source') mode = 'source';
+      if (mode !== 'chat' && mode !== 'source' && mode !== 'trajectory') mode = 'source';
       app.dataset.monitorMode = mode;
       document.querySelectorAll('[data-monitor-mode-btn]').forEach(btn => {
         btn.classList.toggle('on', btn.dataset.monitorModeBtn === mode);
       });
+      if (mode === 'trajectory') return;
       selectSidePane(currentSideTab);
       if (mode === 'chat') scrollChatToBottom();
     }
@@ -15731,13 +16651,6 @@ class Root {
       const name = (currentDocument.name || 'data').replace(/\.json$/i, '') + '.xls';
       downloadFile(html, 'application/vnd.ms-excel', name);
       showToast('Exported Excel', name);
-    }
-
-    function toggleMonitorPause() {
-      const file = getMonitorFile(activeMonitorFileId);
-      const side = currentSideTab;
-      startStream(file.format, file.paused, file.mode, file);
-      if (side) selectSidePane(side);
     }
 
     function renderFileMenuJsonRecents() {

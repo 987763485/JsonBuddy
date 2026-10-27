@@ -1,117 +1,213 @@
 # JSON Buddy
 
-JSON Buddy 是一个本地优先的 JSON 桌面工作台：编辑与校验 JSON、结构化对比、监控 JSONL / `.jsonl.zstd` 流、运行本地 Mock API，并在使用过程中保持数据不离开本机。
+English · [简体中文](README.zh-CN.md)
 
-UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型的 HTML/CSS，通过 `ui/bridge.ts` 注入真实编辑能力并调用 Tauri 2 Rust 后端，确保界面与原型一致。
+A local-first JSON workbench for JSON tooling, local mock APIs, and JSON Lines agent monitoring.
 
-## 当前状态
+## Introduction
 
-界面层已切换到锁定原型，并完成以下真实数据桥接：
+JSON Buddy is built around three modules:
 
-- Tauri 2 应用直接加载锁定原型的 HTML/CSS/DOM；窗口内容铺满 webview，原生交通灯叠放在原型标题栏上
-- 本地数据目录 `~/.json_buddy/` 初始化与旧目录迁移
-- 设置桥接：语言、主题、Mock 端口、HTTPS 开关持久化；运行中修改端口或 HTTPS 会自动重启 Mock 服务
-- JSON 工具桥接：最近文件、新建、打开、保存、移除；编辑后防抖自动保存，标题栏圆点显示未保存状态；大文件打开只由 CodeMirror 渲染，避免隐藏源码 DOM 重复构建
-- JSON 对比桥接：两侧文件读取、最近文件菜单与本地文件选择
-- JSON 流桥接：JSONL / `.jsonl.zstd` 快照、跟随、暂停、删除与实时事件渲染；源代码固定行高虚拟列表、自动换行回退、脱离时新事件计数与一键跟随、真实事件速率、保留缓冲计数与最后事件时间；超出 10,000 条 / 50 MB 的事件写入本地会话缓存，滚动到顶部时按需加载更早事件；监控头部冗余统计行不再显示，文件最后修改时间移入底部状态栏；原文件 / 对话 / 轨迹主视图切换在工具栏中居中；右侧详情栏顶部显示“详情”标题，关闭按钮位于标题栏右端；关闭后折叠为窄条并可点击恢复
-- 流对话视图：Rust 归一化用户/助手消息、思考（可展开）、工具调用、模型切换、会话统计与只读状态；会话侧栏的轮次与工具调用列表支持折叠，并在同一侧栏内滚动查看全部条目
-- 对话轨迹：JSONL 监控的 Source / Chat 之后新增“轨迹”视图；按轮次与步骤列出用户、助手和工具事件，提供输入 / 模型 / 工具三轨时间线、搜索、虚拟行列表和可调整宽度的详情检查器（概述、参数、结果、Schema、计时）；助手思考/输出与工具参数/结果使用相同的卡片底色、边框、字号与排版；检查器面板、页签栏、白色内容卡片和关闭按钮沿用右侧详情栏的背景、高度与字体；检查器角色标题与列表使用同一套用户/助手/工具颜色；检查器外框与右侧详情栏一致，仅保留左侧 1px 分隔线；时间线事件块可点击选中、拖拽选择区间并过滤列表，鼠标滚轮以指针为锚点缩放时间线，悬停显示记录时间、耗时与参数/结果摘要，区间徽标、Esc 或双击可清除；轨迹顶栏与对话标题栏一致，为 37px 全宽 Chrome 顶栏并使用相同的背景、内边距和底边线；工具栏可在实际时长/等宽之间切换时间线，并整体折叠/展开轮次与调用分组，折叠摘要行点击可恢复；仅在激活轨迹视图时构建和渲染
-- 审计：Rust 按规则分类目录穿越、删除、上传、外发、Shell 与读取，支持类别设置、严重级别筛选、原始事件定位与动态本地化；审计卡片只保留查看原始事件和复制目标操作；应用级事件与 Mock 路由穿越会进入当前审计面板；启用网络类别后，被拒绝的非本地请求也会记录
-- 树视图：第六种视图，支持展开/折叠、键盘导航、节点筛选、路径检查器、复制路径与跳转源码；JSON 解析、节点统计、筛选、展开路径与可见行计算全部在 Rust 中完成，前端只渲染返回的行并处理交互
-- 表格视图：真实 JSON 分节、列选择、行筛选、单元格检查器、源码定位与本地化空状态；长数组与对象按滚动窗口虚拟渲染，不再截断 500 行
-- 图形视图：真实 JSON 节点/边、拖拽、缩放、布局切换与迷你地图
-- 代码生成：从当前 JSON 生成 JSON Schema、TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart；JSON Schema 位于目标菜单首位并作为默认选中的生成目标；类型推断、合并与代码输出全部在 Rust 中完成，界面只负责调用命令和渲染结果；超长生成代码使用固定行高虚拟窗口，只渲染可见行并在滚动或窗口缩放时更新
-- 滚动条：桥接层统一注入全局 `::-webkit-scrollbar` 样式，所有面板、编辑器、代码视图和侧栏使用同一宽度、圆角与主题色；原型中仅用于隐藏标签栏滚动条的规则保留
-- 面板分割：JSON 编辑器/画布、对比 A/B、流监控源码/侧栏、会话线程/侧栏的分割条均可拖拽调整，支持键盘方向键、双击复位、窗口缩放时自动限宽并在空间恢复后保留用户宽度；文本视图下编辑器始终占满可用宽度
-- JSON 对比：进入对比页面时 A/B 两侧为空，不再自动载入最近文件；通过两侧菜单选择文件后才开始对比，单侧已选时显示等待提示；选择单侧文件后立即在该侧显示内容预览，两侧都选定后开始对比；B 侧文件选择器后的清除按钮可清空两侧文件并恢复初始选择状态
-- 大文件性能：打开文件时固定切到文本视图并只渲染编辑器；分栏、图形、代码、表格与树只在激活对应视图时计算和渲染。打开超过 2 MB 的 JSON 时关闭 CodeMirror 语法解析，并在载入前完成视口测量，避免 CodeMirror 先渲染全部行导致首次布局阻塞；状态栏只显示根路径；打开文档时重置光标到开头，避免对超长单行做语法树定位；对比文件超过 400 KB 自动使用文本对比，超过 10,000 行停止逐行渲染，变更列表最多显示前 2,000 项；超长行只高亮前 8,000 个字符并标注省略
-- 导入导出：CSV / JSON / JSONL 导入写入本地文档目录；CSV、Excel、Mock 与生成代码通过原生保存对话框导出
-- JSON 搜索：键/值筛选、结果计数与跳转定位到编辑器；Mock 生成默认 100 条、上限 1,000 条；生成参数随项目保存，生成数据只作为运行期响应并在打开或启动项目时重新生成，不写入项目文件
-- JSON Mock 桥接：项目持久化、项目独立启停与路由挂载/卸载（共享本地服务同时绑定 `127.0.0.1` 与 `::1`，支持路径参数、查询参数与穿越拦截）、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入（远程 `$ref` / `$id` 拒绝、1,000 定义上限、导入来源随接口持久化）、生成/导出（JSON Schema 使用 `$defs`，OpenAPI 默认 YAML，可在保存对话框选择 `.json` 导出 JSON）、真实请求日志、HTTP/HTTPS 本地服务启停、服务运行时长与总请求数；Mock 路由中的 `..` 穿越会返回 403 并写入审计；端点测试请求由 Rust 原生发送，绕过 webview CORS 并接受应用自签名证书，目标严格限制在 localhost
-- 状态栏：有效/无效 JSON、光标行号列号、光标 JSON 路径（可复制）、按文档检测的缩进宽度与图形缩放比例随真实状态更新
-- 桌面集成：原生 macOS 菜单（新建、打开 JSON/流、保存、设置与编辑命令）随语言重建；拖放 JSON / JSONL / `.jsonl.zstd` 文件到窗口即可打开
-- 在原型编辑器与 Mock 响应区域注入 CodeMirror 6，保持原型的排版与语法色
-- 复制操作使用 Tauri 剪贴板插件并显示本地化 Toast；内置 Inter 与 JetBrains Mono 字体，不请求网络字体
-- 格式化、压缩、校验仍由原型交互驱动，保存写入真实文件
-- 成功 / 失败 Toast 使用原型现有组件
+- **JSON tools**: edit, format, validate, compare, and explore JSON through text, split, graph, code, table, and tree views, then generate code from it.
+- **JSON Mock**: create projects and endpoints and publish local HTTP/HTTPS mock APIs, with JSON Schema / OpenAPI import, generated data, and request logs.
+- **JSON Lines monitoring**: follow agent sessions from Claude Code, Codex, WorkBuddy, and similar tools through JSONL / `.jsonl.zstd` files; read conversations, inspect trajectories, and review audit events.
 
-React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
+All data and processing stay on your machine. Settings, documents, mock projects, stream caches, and audit records live under `~/.json_buddy/`, and the app makes no non-local network requests.
 
-## 技术栈
+Built with Tauri 2 and Rust. The UI source is `design/prototype.html`; the desktop app loads that prototype's HTML/CSS directly, while `ui/bridge.ts` adds CodeMirror, live data, and Tauri commands.
 
-- **桌面**：Tauri 2、Rust
-- **界面**：锁定原型 HTML/CSS（运行时由 `scripts/sync-ui.mjs` 同步）
-- **桥接**：TypeScript、Vite 8（只负责界面与 Tauri 命令调用）
-- **编辑器**：CodeMirror 6（注入原型编辑区域）
-- **字体**：原型字体栈，Inter / JetBrains Mono
-- **代码生成**：Rust 类型图推断、数组合并、命名与 12 种目标输出
-- **数据**：本地 `~/.json_buddy/`，不上传网络
+**Highlights**
 
-## 开发
+- **Structured compare**: pick files independently for A/B, compare by structure or text, inspect changes, sync scrolling, and ignore key order.
+- **Conversation and trajectory**: reconstruct user / assistant / tool calls, thinking, and model switches from stream events; the trajectory view adds an Input / Model / Tools timeline and a filterable step inspector.
+- **Audit**: traversal, deletion, upload, egress, shell, and read events classified by rule, filterable in the current session with target copying.
+- **Large-file performance**: tail-only loading for large streams, virtual lists, and lazy rendering for large JSON documents.
+- **Local-first**: no non-local network requests; mock servers listen only on localhost.
 
-要求：
+## Interface
 
-- Node.js 20.19+（当前使用 Node 22）
+The screenshots below use the demo data in `design/prototype.html`.
+
+### JSON editor and graph
+
+Text, split, graph, code, table, and tree views share one document; split view shows source and node graph together.
+
+![JSON editor and graph](docs/images/ui-json-editor.png)
+
+### Structural compare
+
+Choose files for A and B, then compare by structure. Changes are grouped by JSON path, with text mode, ignore-key-order, sync scrolling, and change navigation.
+
+![Structural compare](docs/images/ui-compare.png)
+
+### JSONL monitor: conversation
+
+Opening a stream follows it automatically. The conversation view reconstructs user, assistant, thinking, tool calls, and model switches; the right sidebar shows live events, session stats, and audit.
+
+![JSONL monitor conversation view](docs/images/ui-monitor-chat.png)
+
+### Conversation trajectory
+
+The trajectory view lists user, assistant, and tool events by round and step, with a three-lane timeline, range filtering, wheel zoom, and an inspector for parameters, result, schema, and timing.
+
+![Conversation trajectory](docs/images/ui-trajectory.png)
+
+### Local mock server
+
+Manage projects and endpoints and edit response bodies in place. Import JSON Schema / OpenAPI, generate data, inspect request logs, and run an HTTP/HTTPS server on localhost.
+
+![Local mock server](docs/images/ui-mock.png)
+
+### Dark theme
+
+The workbench and monitoring views keep the same layout in dark mode.
+
+| Dark JSON editor | Dark trajectory |
+| --- | --- |
+| ![JSON editor in dark theme](docs/images/ui-json-editor-dark.png) | ![Trajectory in dark theme](docs/images/ui-trajectory-dark.png) |
+
+## Build and run
+
+**Requirements**
+
+- Node.js 20.19+ (Node 22 is used)
 - Rust 1.77.2+
-- macOS、Windows 或 Linux 桌面环境
+- macOS, Windows, or Linux desktop environment
+
+**Install and start the development build**
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-调试模式启动开发构建并自动打开 Web Inspector：
+**Debug mode**
+
+Start a development build and open the Web Inspector automatically:
 
 ```bash
 npm run tauri:debug
 ```
 
-调试构建的“开发”菜单包含“开发者工具”，可随时切换 Web Inspector；快捷键为 macOS `Cmd+Option+I`、Windows/Linux `Ctrl+Shift+I`。macOS/Linux 使用 WebKit Web Inspector，Windows 使用 WebView2 DevTools。发布构建不包含该菜单项。也可以使用 `JSON_BUDDY_DEVTOOLS=1 npm run tauri:dev` 手动启用自动打开。
+The debug build's Develop menu contains Developer Tools. Shortcuts are `Cmd+Option+I` on macOS and `Ctrl+Shift+I` on Windows/Linux. macOS/Linux use the WebKit Web Inspector; Windows uses WebView2 DevTools. Release builds omit this menu item. You can also enable automatic opening manually:
 
-只构建界面：
+```bash
+JSON_BUDDY_DEVTOOLS=1 npm run tauri:dev
+```
+
+**Build the UI only**
 
 ```bash
 npm run build
 ```
 
-构建桌面应用：
+**Build the desktop app**
 
 ```bash
 npm run tauri:build
 ```
 
-`npm run dev` / `npm run build` 会先把锁定原型同步为 `ui/index.html`，再构建桥接脚本。React 参考实现可通过 `npm run dev:react` 和 `npm run build:react` 单独运行，不参与桌面发布。
+`npm run dev` / `npm run build` first sync `design/prototype.html` to `ui/index.html`, then build the bridge. The React reference implementation in `src/` can run separately with `npm run dev:react` and `npm run build:react`; it is not part of the desktop release.
 
-## 数据目录
+**Tests and checks**
 
-应用数据默认位于：
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run check
+```
+
+## Architecture
+
+### Overview
+
+JSON Buddy is a Tauri 2 app built from a prototype UI, a TypeScript bridge, and a Rust backend. Rust owns files, streams, mocks, audit, code generation, and tree computation; the frontend only renders and handles interaction, and never accesses the disk or network directly.
+
+```text
+design/prototype.html           single UI source
+        │  scripts/sync-ui.mjs
+        ▼
+ui/index.html + ui/bridge.ts    CodeMirror, real data, interactions
+        │  Tauri IPC
+        ▼
+Rust backend
+  documents · streams · mock · audit · codegen · tree
+        │
+        ▼
+~/.json_buddy/                  settings, recents, documents, mocks, audit, caches
+```
+
+### Key modules
+
+| Module | Responsibility |
+| --- | --- |
+| `design/prototype.html` | Single source for UI and interactions, including the trajectory page |
+| `scripts/sync-ui.mjs` | Syncs the prototype to `ui/index.html` at build time |
+| `ui/bridge.ts` | Bridge between the prototype and Tauri; CodeMirror, list rendering, event subscriptions, localization |
+| `src-tauri/src/documents.rs` | JSON documents, recents, saving, size limits |
+| `src-tauri/src/streams.rs` | JSONL / zstd snapshots, tail loading, `notify` following, event archive |
+| `src-tauri/src/conversation.rs` | Normalizes stream events into conversations, tool calls, and model switches |
+| `src-tauri/src/audit.rs` | Audit rules, event recording, filtering, and settings |
+| `src-tauri/src/mock.rs` | Local mock server, projects / endpoints, Schema and OpenAPI import, request logs |
+| `src-tauri/src/codegen.rs` | Type inference, schema merging, naming, and 12 target languages |
+| `src-tauri/src/tree.rs` | Tree parsing, expansion, filtering, and visible-row computation |
+| `src-tauri/src/network.rs` | Loopback-only endpoint tests and certificate handling |
+
+See [`docs/architecture.md`](./docs/architecture.md) for module boundaries and data flow.
+
+### Performance
+
+- Opening a file renders only the text view; split, graph, code, table, and tree are computed when activated.
+- JSON over 2 MB disables CodeMirror syntax parsing and measures the viewport before loading.
+- JSONL over 64 MB and zstd over 16 MB load only a tail window and mark line counts with `+`; following resumes from the tail offset.
+- Stream events use a fixed-row virtual list. Events beyond 10,000 / 50 MB go to a local cache and load on demand when scrolling to the top.
+- Very long generated code uses a fixed-row window and renders only visible lines.
+
+### Data and security
+
+Application data defaults to `~/.json_buddy/`:
 
 ```text
 ~/.json_buddy/
 ├── settings.json
 ├── recent.json
-├── documents/       # 新建 JSON 文档
+├── documents/       # New JSON documents
 ├── mock/
-│   ├── projects/    # Mock 项目
-│   ├── certs/       # HTTPS 本地证书
-│   └── logs/        # 当前会话请求日志
+│   ├── projects/    # Mock projects
+│   ├── certs/       # Local HTTPS certificates
+│   └── logs/        # Request logs for the current session
 ├── audit/
-└── cache/streams/   # 超出内存缓冲的流事件
+└── cache/streams/   # Stream events beyond the in-memory buffer
 ```
 
-用户主动打开的外部 JSON 文件仍保存在原路径并参与自动保存；新建文档默认写入 `documents/`。首次启动时若检测到旧 `~/.json_studio/` 且新目录不存在，会尝试自动迁移；迁移失败则保留旧目录并创建新目录。
+External JSON files you open remain at their original paths and participate in auto-save; new documents default to `documents/`. On first launch, if the legacy `~/.json_studio/` exists and the new directory does not, migration is attempted automatically.
 
-## 文档
+Security boundaries:
 
-- [`AGENT.md`](./AGENT.md) — 角色、约束、当前工作与文档索引
-- [`design/README.md`](./design/README.md) — 产品设计、交互说明、实现说明与 v1.0 决策
-- [`design/prototype.html`](./design/prototype.html) — 已锁定的 UI 原型，禁止修改
-- [`docs/architecture.md`](./docs/architecture.md) — 工程架构、模块边界与安全约束
+- The app makes no non-local network requests.
+- The mock server binds only to `127.0.0.1` / `::1`; route traversal is rejected and audited.
+- Endpoint tests are sent by Rust, strictly target localhost, and accept the app's self-signed certificate.
+- File access, path validation, audit, and stream processing all happen in Rust.
 
-## 开发约定
+## License
 
-- UI 原型文件冻结，所有实现改动只能进入应用代码。
-- 功能开发在 `dev` 分支，大模块完成后提交；主要版本合并到 `main`。
-- 提交信息只描述新增、修改或修复，不包含版本迭代或发布信息。
-- 应用不发起任何非本地网络请求；Mock 服务只绑定 localhost，端点测试请求也由 Rust 校验后仅访问回环地址。
-- 所有无可见结果的完成操作必须显示本地化 Toast。
+JSON Buddy is released under the **MIT License**. See [`LICENSE`](./LICENSE).
+
+Third-party dependencies retain their own licenses.
+
+## Documentation
+
+- [`AGENT.md`](./AGENT.md) — agent role, constraints, current work, and documentation index
+- [`design/README.md`](./design/README.md) — product design, interactions, and implementation notes
+- [`design/prototype.html`](./design/prototype.html) — UI source, including the trajectory page; synced at build time
+- [`docs/architecture.md`](./docs/architecture.md) — architecture, module boundaries, and security constraints
+- [`README.zh-CN.md`](./README.zh-CN.md) — Chinese README
+
+The design and architecture documents are currently written in Chinese.
+
+## Development conventions
+
+- Change the UI in `design/prototype.html` first, then sync it with `npm run build`; do not modify the UI without an explicit request.
+- Develop features on `dev` and merge major completed work to `main`.
+- Commit messages describe added, modified, or fixed functionality; do not include version or release information.
+- Completed actions without a visible result must show a localized toast.
+- Add automated tests for new behavior; run `cargo test` and `npm run build` before committing.

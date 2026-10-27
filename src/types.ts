@@ -35,6 +35,7 @@ export interface RecentStream {
   decodedSize: number;
   lines: number;
   openedAt: string;
+  tail?: boolean;
 }
 
 export interface StreamEvent {
@@ -137,6 +138,7 @@ export interface StreamSnapshot {
   events: StreamEvent[];
   conversation: Conversation;
   audit: AuditEntry[];
+  tail?: boolean;
 }
 
 export interface StreamLivePayload {
@@ -147,6 +149,8 @@ export interface StreamLivePayload {
   totalLines: number;
   decodedSize: number;
   reset: boolean;
+  tail?: boolean;
+  silent?: boolean;
 }
 
 export interface StreamErrorPayload {

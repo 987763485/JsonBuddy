@@ -25,6 +25,8 @@ pub struct RecentStream {
     pub decoded_size: u64,
     pub lines: u64,
     pub opened_at: String,
+    #[serde(default)]
+    pub tail: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
