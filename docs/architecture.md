@@ -2,7 +2,7 @@
 
 ## 总览
 
-JSON Buddy 使用 Tauri 2 作为桌面外壳。界面直接加载锁定的原型 HTML/CSS，`ui/bridge.ts` 负责注入 CodeMirror、替换 mock 数据并调用 Tauri 命令；Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。UI 原型已冻结，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
+JSON Buddy 使用 Tauri 2 作为桌面外壳。界面直接加载 `design/prototype.html` 原型 HTML/CSS，`ui/bridge.ts` 负责注入 CodeMirror、替换 mock 数据并调用 Tauri 命令；Rust 侧负责本地文件、流处理、Mock 服务、审计和设置持久化。原型是 UI 的唯一来源，产品与交互规则以 [`design/README.md`](../design/README.md) 为准。
 
 ```text
 ┌──────────────────────────────────────────────┐
@@ -37,7 +37,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 
 | 路径 | 职责 |
 | --- | --- |
-| `design/prototype.html` | 锁定 UI 源文件，禁止修改 |
+| `design/prototype.html` | UI 源文件，构建时同步为应用页面 |
 | `scripts/sync-ui.mjs` | 把原型复制为 `ui/index.html` 并注入 bridge |
 | `ui/bridge.ts` | 原型与 Tauri 后端之间的桥接层 |
 | `ui/index.html` | 构建时生成，不进入 Git |

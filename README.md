@@ -2,7 +2,7 @@
 
 JSON Buddy 是一个本地优先的 JSON 桌面工作台：编辑与校验 JSON、结构化对比、监控 JSONL / `.jsonl.zstd` 流、运行本地 Mock API，并在使用过程中保持数据不离开本机。
 
-UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型的 HTML/CSS，通过 `ui/bridge.ts` 注入真实编辑能力并调用 Tauri 2 Rust 后端，确保界面与原型一致。
+UI 以 `design/prototype.html` 为唯一源文件；桌面应用直接加载该原型的 HTML/CSS，通过 `ui/bridge.ts` 注入真实编辑能力并调用 Tauri 2 Rust 后端，确保界面与原型一致。
 
 ## 当前状态
 
@@ -105,12 +105,12 @@ npm run tauri:build
 
 - [`AGENT.md`](./AGENT.md) — 角色、约束、当前工作与文档索引
 - [`design/README.md`](./design/README.md) — 产品设计、交互说明、实现说明与 v1.0 决策
-- [`design/prototype.html`](./design/prototype.html) — 已锁定的 UI 原型，禁止修改
+- [`design/prototype.html`](./design/prototype.html) — UI 源文件（含对话轨迹页），构建时同步到应用
 - [`docs/architecture.md`](./docs/architecture.md) — 工程架构、模块边界与安全约束
 
 ## 开发约定
 
-- UI 原型文件冻结，所有实现改动只能进入应用代码。
+- UI 变更先修改 `design/prototype.html`，再通过 `npm run build` 同步；未获明确要求时不主动修改 UI。
 - 功能开发在 `dev` 分支，大模块完成后提交；主要版本合并到 `main`。
 - 提交信息只描述新增、修改或修复，不包含版本迭代或发布信息。
 - 应用不发起任何非本地网络请求；Mock 服务只绑定 localhost，端点测试请求也由 Rust 校验后仅访问回环地址。

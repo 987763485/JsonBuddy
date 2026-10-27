@@ -3,9 +3,9 @@
 - 交互原型：[`prototype.html`](./prototype.html)，直接用浏览器打开。
 - 整体概览：[`ui-overview.png`](./ui-overview.png)。
 
-> **v1.0 定版**：UI 已锁定。`design/prototype.html` 是最终交互原型，后续开发只修改实现代码，不再修改该 UI 文件。
+> **UI 源文件**：`design/prototype.html` 是交互与视觉的唯一来源。UI 变更需直接修改该文件，再通过 `npm run build` 同步到桌面应用；未获明确要求时不要主动修改 UI。
 >
-> 原型与截图中的品牌仍显示旧名 JSON Buddy，因为该 UI 文件已冻结；产品、文档与桌面实现统一使用 **JSON Buddy**。
+> 原型与截图中的品牌仍显示旧名 JSON Buddy；产品、文档与桌面实现统一使用 **JSON Buddy**。
 
 ## 界面截图
 
