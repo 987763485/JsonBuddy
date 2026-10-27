@@ -45,6 +45,67 @@ export interface StreamEvent {
   name?: string | null;
 }
 
+export interface ConversationToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+  status: string;
+  durationMs?: number | null;
+  output?: string | null;
+  line: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant" | "system" | string;
+  model?: string | null;
+  timestamp?: string | null;
+  text: string;
+  reasoning?: string | null;
+  toolCalls: string[];
+  streaming: boolean;
+  line: number;
+}
+
+export interface ConversationTurn {
+  index: number;
+  model?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  messages: number;
+  streaming: boolean;
+}
+
+export interface ConversationSwitch {
+  from: string;
+  to: string;
+  timestamp?: string | null;
+}
+
+export interface ConversationStats {
+  messages: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  turns: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface Conversation {
+  sessionId?: string | null;
+  title?: string | null;
+  systemPrompt?: string | null;
+  models: string[];
+  startedAt?: string | null;
+  endedAt?: string | null;
+  messages: ConversationMessage[];
+  toolCalls: ConversationToolCall[];
+  turns: ConversationTurn[];
+  switches: ConversationSwitch[];
+  stats: ConversationStats;
+}
+
 export interface StreamSnapshot {
   path: string;
   name: string;
@@ -53,11 +114,13 @@ export interface StreamSnapshot {
   decodedSize: number;
   lines: number;
   events: StreamEvent[];
+  conversation: Conversation;
 }
 
 export interface StreamLivePayload {
   path: string;
   events: StreamEvent[];
+  conversation: Conversation;
   totalLines: number;
   decodedSize: number;
   reset: boolean;

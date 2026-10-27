@@ -9,6 +9,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type {
   AppSettings,
   BootstrapData,
+  Conversation,
+  ConversationMessage,
+  ConversationToolCall,
   JsonDocument,
   MockEndpoint,
   MockProject,
@@ -889,6 +892,7 @@ interface BridgeStreamFile {
 let buddyStreamSnapshot: StreamSnapshot | null = null;
 let buddyStreamEvents: StreamEvent[] = [];
 let buddyStreamFollowing: string | null = null;
+let buddyConversation: Conversation | null = null;
 let streamBridgeReady = false;
 
 function streamLineLabel(value: number): string {
@@ -1130,6 +1134,370 @@ function updateRealStreamChrome(file: BridgeStreamFile, live: boolean): void {
   w.setText("lpFrame", live ? "New events appended" : `Last ${file.modified}`);
 }
 
+function chatTime(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("en-GB", { hour12: false });
+}
+
+function chatDateLabel(value?: string | null): string {
+  if (!value) return "Conversation";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Conversation";
+  const today = new Date();
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  const time = date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  if (sameDay) return `Today · ${time}`;
+  const day = date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric"
+  });
+  return `${day} · ${time}`;
+}
+
+function chatDuration(start?: string | null, end?: string | null): string {
+  if (!start) return "—";
+  const from = new Date(start).getTime();
+  const to = end ? new Date(end).getTime() : Date.now();
+  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return "—";
+  const seconds = (to - from) / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds % 60)}s`;
+}
+
+function chatMarkdown(text: string): string {
+  const chunks = String(text ?? "").split("```");
+  return chunks
+    .map((chunk, index) => {
+      if (index % 2 === 1) {
+        const body = chunk.replace(/^[^\n]*\n/, "").replace(/\n$/, "");
+        return `<div class="codeblock"><pre>${w.escHtml(body)}</pre></div>`;
+      }
+      const escaped = w.escHtml(chunk)
+        .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+      return escaped
+        .split(/\n{2,}/)
+        .map((part: string) => `<p>${part.replace(/\n/g, "<br>")}</p>`)
+        .join("");
+    })
+    .join("");
+}
+
+function chatToolSummary(call: ConversationToolCall): string {
+  try {
+    const parsed = JSON.parse(call.arguments) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const key of [
+        "path",
+        "file",
+        "filename",
+        "command",
+        "cmd",
+        "query",
+        "url",
+        "pattern",
+        "target",
+        "name"
+      ]) {
+        const value = parsed[key];
+        if (typeof value === "string" && value.trim()) return value.slice(0, 90);
+      }
+    }
+  } catch {
+    // Arguments may be a plain string.
+  }
+  const flat = String(call.arguments ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > 90 ? `${flat.slice(0, 87)}…` : flat;
+}
+
+function chatToolLabel(call: ConversationToolCall): string {
+  if (call.status === "error") return "error";
+  if (call.status === "pending") return "running";
+  return call.durationMs != null ? `${call.durationMs}ms · OK` : "OK";
+}
+
+function chatToolCard(call: ConversationToolCall): string {
+  const failed = call.status === "error";
+  const output = String(call.output ?? "").trim();
+  const preview =
+    output.length > 1600 ? `${output.slice(0, 1600)}\n…` : output;
+  return `<div class="tool-card${failed ? " err" : ""}">
+    <div class="tool-head">
+      <svg class="i xs" viewBox="0 0 24 24"><use href="#i-wrench"/></svg>
+      <span class="tool-name">${w.escHtml(call.name)}</span>
+      <span class="tool-arg">${w.escHtml(chatToolSummary(call))}</span>
+      <span class="tool-status">${w.escHtml(chatToolLabel(call))}</span>
+      <svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-4)"><use href="#i-chev-right"/></svg>
+    </div>
+    ${preview ? `<div class="tool-body">${w.escHtml(preview).replace(/\n/g, "<br>")}</div>` : ""}
+  </div>`;
+}
+
+function chatAvatar(model?: string | null): string {
+  if (model && /r1/i.test(model)) {
+    return '<div class="avatar assistant r1">R1</div>';
+  }
+  return '<div class="avatar assistant"><svg class="i" viewBox="0 0 24 24"><use href="#i-sparkle"/></svg></div>';
+}
+
+function chatModelSwitch(
+  from: string,
+  to: string,
+  timestamp?: string | null
+): string {
+  return `<div class="model-switch">
+    <span class="line"></span>
+    <span class="pill">
+      <svg class="i xs" viewBox="0 0 24 24"><use href="#i-swap"/></svg>
+      <span>Model switched</span>
+      <span class="from">${w.escHtml(from)}</span>
+      <svg class="i xs" viewBox="0 0 24 24"><use href="#i-arrow-right"/></svg>
+      <span class="to">${w.escHtml(to)}</span>
+      <span class="time">${w.escHtml(chatTime(timestamp))}</span>
+    </span>
+    <span class="line"></span>
+  </div>`;
+}
+
+function renderConversationMessage(
+  message: ConversationMessage,
+  calls: Map<string, ConversationToolCall>
+): string {
+  const time = chatTime(message.timestamp);
+  if (message.role === "user") {
+    return `<div class="msg user">
+      <div class="avatar user">Y</div>
+      <div class="msg-body">
+        <div class="msg-meta"><b>You</b><span>${w.escHtml(time)}</span></div>
+        <div class="bubble user">${chatMarkdown(message.text)}</div>
+      </div>
+    </div>`;
+  }
+  const model = message.model || "Assistant";
+  const tools = message.toolCalls
+    .map((id) => calls.get(id))
+    .filter((call): call is ConversationToolCall => !!call)
+    .map(chatToolCard)
+    .join("");
+  return `<div class="msg assistant">
+    ${chatAvatar(message.model)}
+    <div class="msg-body">
+      <div class="msg-meta"><b>${w.escHtml(model)}</b><span>${w.escHtml(time)}</span>${
+        message.streaming ? '<span class="live-only">· streaming</span>' : ""
+      }</div>
+      <div class="parts">
+        ${
+          message.reasoning
+            ? `<button class="reasoning"><svg class="i" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>Thought</button>`
+            : ""
+        }
+        ${message.text ? `<div class="bubble">${chatMarkdown(message.text)}</div>` : ""}
+        ${tools}
+        <div class="msg-foot"><span>#L${message.line}</span>${
+          message.toolCalls.length
+            ? `<span>·</span><span>${message.toolCalls.length} tool${
+                message.toolCalls.length === 1 ? "" : "s"
+              }</span>`
+            : ""
+        }</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderConversation(live: boolean): void {
+  const scroller = document.getElementById("chatScroll");
+  const inner = scroller?.querySelector(".chat-inner");
+  if (!scroller || !inner) return;
+  const conversation = buddyConversation;
+  const head = document.querySelector(".chat-head");
+  const modelChip = head?.querySelector<HTMLElement>(".model-chip");
+  const state = document.getElementById("chatStatePill");
+  if (state) state.textContent = live ? "Following" : "Paused";
+  document.getElementById("chatLiveDot")?.classList.toggle("pulse", live);
+  if (modelChip) {
+    const models = conversation?.models ?? [];
+    modelChip.textContent = models.length
+      ? `${models.length} model${models.length === 1 ? "" : "s"}`
+      : "1 model";
+  }
+  w.setText("chatCount", `${conversation?.messages.length ?? 0} messages`);
+  const composer = document.getElementById("chatComposerText");
+  if (composer) {
+    composer.textContent = `Read-only monitor · viewing ${
+      buddyStreamSnapshot?.name ?? "session"
+    }`;
+  }
+  if (!conversation || conversation.messages.length === 0) {
+    inner.innerHTML =
+      '<div class="chat-date">No conversation events</div>' +
+      '<div class="bubble" style="color:var(--ink-3)">This stream has no user or assistant messages to display. Open the source view to inspect the raw lines.</div>';
+    renderConversationSession(live);
+    return;
+  }
+  const calls = new Map(
+    conversation.toolCalls.map((call) => [call.id, call])
+  );
+  const switches = [...conversation.switches];
+  let html = `<div class="chat-date">${w.escHtml(
+    chatDateLabel(conversation.messages[0]?.timestamp)
+  )}</div>`;
+  if (conversation.systemPrompt) {
+    const tokens = Math.max(
+      1,
+      Math.round(conversation.systemPrompt.length / 4)
+    );
+    html += `<button class="context-card">
+      <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
+      <span>System prompt</span>
+      <span class="ctx-meta">${tokens.toLocaleString("en-US")} tokens</span>
+    </button>`;
+  }
+  for (const message of conversation.messages) {
+    if (message.role === "system") continue;
+    if (message.role === "assistant" && message.model) {
+      while (
+        switches.length &&
+        switches[0].to === message.model &&
+        switches[0].from !== switches[0].to
+      ) {
+        const next = switches.shift();
+        if (next) html += chatModelSwitch(next.from, next.to, next.timestamp);
+      }
+    }
+    html += renderConversationMessage(message, calls);
+  }
+  for (const next of switches) {
+    html += chatModelSwitch(next.from, next.to, next.timestamp);
+  }
+  const nearBottom =
+    scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+  inner.innerHTML = html;
+  renderConversationSession(live);
+  try {
+    w.applyMonitorFilter();
+  } catch {
+    // Filters are owned by the prototype page.
+  }
+  const chatScroller = scroller;
+  if (live && nearBottom) {
+    requestAnimationFrame(() => {
+      chatScroller.scrollTop = chatScroller.scrollHeight;
+    });
+  }
+}
+
+function renderConversationSession(live: boolean): void {
+  const pane = document.querySelector('.side-pane[data-side-pane="session"]');
+  if (!pane) return;
+  const conversation = buddyConversation;
+  if (!conversation) {
+    pane.innerHTML =
+      '<div class="side-section"><div class="side-title">Session</div><div class="turn-sub">No session data.</div></div>';
+    return;
+  }
+  const models = conversation.models.length
+    ? conversation.models
+    : ["Assistant"];
+  const current = models[models.length - 1];
+  const started = chatTime(conversation.startedAt);
+  const ended = conversation.endedAt;
+  const token = (value: number) => value.toLocaleString("en-US");
+  const modelRow = (model: string, index: number) => {
+    const isCurrent = index === models.length - 1;
+    const avatar = /r1/i.test(model)
+      ? '<span class="model-avatar r1">R1</span>'
+      : '<span class="model-avatar"><svg class="i" viewBox="0 0 24 24"><use href="#i-sparkle"/></svg></span>';
+    return `<div class="${isCurrent ? "model-current" : "model-prev"}">
+      ${avatar}
+      <div class="model-main">
+        <div class="model-name">${w.escHtml(model)}</div>
+        <div class="model-sub">${
+          isCurrent ? `current${live ? " · live" : ""}` : "previous"
+        }</div>
+      </div>
+      ${
+        isCurrent
+          ? '<span class="model-badge">CURRENT</span>'
+          : `<span class="model-usage">${w.escHtml(
+              chatTime(conversation.endedAt)
+            )}</span>`
+      }
+    </div>`;
+  };
+  const turns = conversation.turns
+    .slice(-8)
+    .map(
+      (turn) => `<div class="turn-item" ${turn !== conversation.turns[conversation.turns.length - 1] ? 'style="margin-top:4px"' : ""}>
+        <span class="dot${turn.streaming ? " pulse" : ""}"></span>
+        <div class="turn-main">
+          <div class="turn-title">Turn ${turn.index}${turn.model ? ` · ${w.escHtml(turn.model)}` : ""}${turn.streaming ? " · streaming" : ""}</div>
+          <div class="turn-sub">${w.escHtml(chatTime(turn.startedAt))} → ${w.escHtml(
+            turn.endedAt ? chatTime(turn.endedAt) : "live"
+          )} · ${turn.messages} messages</div>
+        </div>
+      </div>`
+    )
+    .join("");
+  const tools = conversation.toolCalls
+    .slice(-12)
+    .map(
+      (call) => `<div class="side-tool${call.status === "error" ? " err" : ""}">
+        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-wrench"/></svg>
+        <span>${w.escHtml(call.name)}</span>
+        <span class="st">${w.escHtml(chatToolLabel(call))}</span>
+      </div>`
+    )
+    .join("");
+  pane.innerHTML = `<div class="session-card">
+    <div class="session-id-row">
+      <span class="session-id-label">SESSION</span>
+      <span class="session-id">${w.escHtml(conversation.sessionId ?? "unknown")}</span>
+      ${live ? '<span class="live-dot pulse"></span>' : ""}
+    </div>
+    <div class="models-head"><span>Models</span><span class="model-count">${models.length}</span></div>
+    ${models.map(modelRow).join("")}
+    <div class="side-stats">
+      <div><div class="side-label">Started</div><div class="side-value">${w.escHtml(started || "—")}</div></div>
+      <div><div class="side-label">Duration</div><div class="side-value">${w.escHtml(
+        chatDuration(conversation.startedAt, ended)
+      )}</div></div>
+      <div><div class="side-label">Turns</div><div class="side-value">${conversation.stats.turns}</div></div>
+      <div><div class="side-label">Messages</div><div class="side-value">${conversation.stats.messages}</div></div>
+      <div><div class="side-label">Prompt</div><div class="side-value">${token(
+        conversation.stats.promptTokens
+      )} tok</div></div>
+      <div><div class="side-label">Completion</div><div class="side-value">${token(
+        conversation.stats.completionTokens
+      )} tok</div></div>
+    </div>
+  </div>
+  ${
+    turns
+      ? `<div class="side-section"><div class="side-title">Turns</div>${turns}</div>`
+      : ""
+  }
+  ${
+    tools
+      ? `<div class="side-section"><div class="side-title">Tool calls</div>${tools}</div>`
+      : ""
+  }`;
+  w.setText("chatCount", `${conversation.messages.length} messages`);
+  if (current) {
+    const chip = document.querySelector<HTMLElement>(".chat-head .model-chip");
+    if (chip) chip.title = `Models used in this session: ${models.join(", ")}`;
+  }
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -1158,6 +1526,7 @@ function patchStreamFlow(): void {
     const snapshot = await invoke<StreamSnapshot>("open_stream", { path });
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
+    buddyConversation = snapshot.conversation;
     const files = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES");
     const existingIndex = files.findIndex((file) => file.id === snapshot.path);
     const existing = existingIndex >= 0 ? files[existingIndex] : undefined;
@@ -1169,6 +1538,7 @@ function patchStreamFlow(): void {
     renderRealStreamSource(false);
     renderRealStreamEvents(false);
     updateRealStreamChrome(entry, false);
+    renderConversation(false);
   };
 
   w.openMonitorFile = async (id: string) => {
@@ -1227,6 +1597,7 @@ function patchStreamFlow(): void {
     renderRealStreamSource(live);
     renderRealStreamEvents(live);
     updateRealStreamChrome(file, live);
+    renderConversation(live);
     if (live) {
       const code = document.getElementById("streamCode");
       if (code) requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
@@ -1292,6 +1663,7 @@ function startStreamEventBridge(): void {
     file.decoded = formatBytes(payload.decodedSize);
     file.ratio = streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
     file.counts = streamLevelCounts(buddyStreamEvents).labels;
+    buddyConversation = payload.conversation ?? buddyConversation;
     const code = document.getElementById("streamCode");
     const nearBottom = code
       ? code.scrollHeight - code.scrollTop - code.clientHeight < 50
@@ -1299,6 +1671,7 @@ function startStreamEventBridge(): void {
     renderRealStreamSource(!file.paused);
     renderRealStreamEvents(!file.paused);
     updateRealStreamChrome(file, !file.paused);
+    renderConversation(!file.paused);
     if (nearBottom && code) {
       requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
     }

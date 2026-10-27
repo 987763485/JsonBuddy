@@ -1,3 +1,4 @@
+use crate::conversation::{normalize_events, Conversation};
 use crate::documents::{RecentStream, RecentStore};
 use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
@@ -13,7 +14,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use zstd::zstd_safe;
 
-const MAX_INITIAL_EVENTS: usize = 2000;
+const MAX_BUFFER_EVENTS: usize = 10_000;
+const MAX_BUFFER_BYTES: usize = 50 * 1024 * 1024;
 const MAX_STREAM_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
@@ -36,6 +38,7 @@ pub struct StreamSnapshot {
     pub decoded_size: u64,
     pub lines: u64,
     pub events: Vec<StreamEvent>,
+    pub conversation: Conversation,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,6 +46,7 @@ pub struct StreamSnapshot {
 pub struct StreamLivePayload {
     pub path: String,
     pub events: Vec<StreamEvent>,
+    pub conversation: Conversation,
     pub total_lines: u64,
     pub decoded_size: u64,
     pub reset: bool,
@@ -112,6 +116,7 @@ impl StreamManager {
         let mut decoded_size = snapshot.decoded_size;
         let mut compressed_pending: Vec<u8> = Vec::new();
         let mut decoded_pending: Vec<u8> = Vec::new();
+        let mut event_buffer = snapshot.events.clone();
 
         let join = thread::spawn(move || {
             let _watcher = watcher;
@@ -137,6 +142,7 @@ impl StreamManager {
                             &mut decoded_size,
                             &mut compressed_pending,
                             &mut decoded_pending,
+                            &mut event_buffer,
                         );
                         if let Err(message) = result {
                             let _ = thread_app.emit(
@@ -216,11 +222,9 @@ pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
         }
         all_events.push(parse_event(line_no, line));
     }
-    let events = if all_events.len() > MAX_INITIAL_EVENTS {
-        all_events.split_off(all_events.len() - MAX_INITIAL_EVENTS)
-    } else {
-        all_events
-    };
+    let mut events = all_events;
+    trim_event_buffer(&mut events);
+    let conversation = normalize_events(&events);
     let name = canonical
         .file_name()
         .and_then(|value| value.to_str())
@@ -234,7 +238,19 @@ pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
         decoded_size,
         lines: total_lines,
         events,
+        conversation,
     })
+}
+
+fn trim_event_buffer(events: &mut Vec<StreamEvent>) {
+    if events.len() > MAX_BUFFER_EVENTS {
+        let start = events.len() - MAX_BUFFER_EVENTS;
+        events.drain(..start);
+    }
+    let mut bytes: usize = events.iter().map(|event| event.raw.len()).sum();
+    while bytes > MAX_BUFFER_BYTES && !events.is_empty() {
+        bytes = bytes.saturating_sub(events.remove(0).raw.len());
+    }
 }
 
 pub fn recent_from_snapshot(snapshot: &StreamSnapshot) -> RecentStream {
@@ -263,6 +279,7 @@ fn process_change(
     decoded_size: &mut u64,
     compressed_pending: &mut Vec<u8>,
     decoded_pending: &mut Vec<u8>,
+    event_buffer: &mut Vec<StreamEvent>,
 ) -> Result<(), String> {
     let metadata = match fs::metadata(target) {
         Ok(metadata) => metadata,
@@ -270,11 +287,13 @@ fn process_change(
     };
     if metadata.len() < *offset {
         let snapshot = read_snapshot(key)?;
+        *event_buffer = snapshot.events.clone();
         let _ = app.emit(
             "stream-live",
             StreamLivePayload {
                 path: key.to_string(),
                 events: snapshot.events,
+                conversation: snapshot.conversation,
                 total_lines: snapshot.lines,
                 decoded_size: snapshot.decoded_size,
                 reset: true,
@@ -310,11 +329,15 @@ fn process_change(
     )?;
 
     if !events.is_empty() {
+        event_buffer.extend(events.iter().cloned());
+        trim_event_buffer(event_buffer);
+        let conversation = normalize_events(event_buffer);
         let _ = app.emit(
             "stream-live",
             StreamLivePayload {
                 path: key.to_string(),
                 events,
+                conversation,
                 total_lines: *line_no,
                 decoded_size: *decoded_size,
                 reset: false,
@@ -420,12 +443,16 @@ mod tests {
             let snapshot = read_snapshot(jsonl.to_string_lossy().as_ref()).expect("example jsonl");
             assert!(snapshot.lines > 1000);
             assert!(!snapshot.events.is_empty());
+            assert!(snapshot.conversation.stats.user_messages > 0);
+            assert!(snapshot.conversation.stats.tool_calls > 0);
+            assert!(!snapshot.conversation.messages.is_empty());
         }
         let zstd_file = example.join("session.v4.jsonl.zstd");
         if zstd_file.is_file() {
             let snapshot = read_snapshot(zstd_file.to_string_lossy().as_ref()).expect("example zstd");
             assert!(snapshot.lines > 10);
             assert_eq!(snapshot.format, "zstd");
+            assert!(!snapshot.conversation.messages.is_empty());
         }
     }
 
