@@ -2156,6 +2156,7 @@ interface BridgeStreamFile {
   mode: "source" | "chat";
   lines: number;
   lineLabel: string;
+  tail?: boolean;
   compressed?: string;
   decoded?: string;
   decodedMB: number;
@@ -2246,6 +2247,10 @@ function streamLineLabel(value: number): string {
   return value.toLocaleString("en-US");
 }
 
+function streamLineLabelWithTail(value: number, tail?: boolean): string {
+  return `${streamLineLabel(value)}${tail ? "+" : ""}`;
+}
+
 function streamRatio(size: number, decoded: number): string {
   if (!size) return "—";
   const ratio = decoded / size;
@@ -2260,7 +2265,6 @@ function directoryOf(path: string): string {
 
 function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
   const size = formatBytes(entry.size);
-  const decoded = formatBytes(entry.decodedSize);
   return {
     id: entry.path,
     name: entry.name,
@@ -2268,11 +2272,17 @@ function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
     paused: true,
     mode: "source",
     lines: entry.lines,
-    lineLabel: streamLineLabel(entry.lines),
+    lineLabel: streamLineLabelWithTail(entry.lines, entry.tail),
+    tail: entry.tail === true,
     compressed: entry.format === "zstd" ? size : undefined,
-    decoded: entry.format === "zstd" ? decoded : undefined,
+    decoded: entry.format === "zstd" ? formatBytes(entry.decodedSize) : undefined,
     decodedMB: entry.decodedSize / (1024 * 1024),
-    ratio: entry.format === "zstd" ? streamRatio(entry.size, entry.decodedSize) : undefined,
+    ratio:
+      entry.format === "zstd"
+        ? entry.tail
+          ? "—"
+          : streamRatio(entry.size, entry.decodedSize)
+        : undefined,
     size,
     path: directoryOf(entry.path),
     origin: "local stream",
@@ -2287,7 +2297,6 @@ function streamFileFromSnapshot(
   keepOpened?: BridgeStreamFile
 ): BridgeStreamFile {
   const size = formatBytes(snapshot.size);
-  const decoded = formatBytes(snapshot.decodedSize);
   const counts = streamLevelCounts(buddyStreamEvents);
   return {
     id: snapshot.path,
@@ -2296,11 +2305,17 @@ function streamFileFromSnapshot(
     paused: true,
     mode: "source",
     lines: snapshot.lines,
-    lineLabel: streamLineLabel(snapshot.lines),
+    lineLabel: streamLineLabelWithTail(snapshot.lines, snapshot.tail),
+    tail: snapshot.tail === true,
     compressed: snapshot.format === "zstd" ? size : undefined,
-    decoded: snapshot.format === "zstd" ? decoded : undefined,
+    decoded: snapshot.format === "zstd" ? formatBytes(snapshot.decodedSize) : undefined,
     decodedMB: snapshot.decodedSize / (1024 * 1024),
-    ratio: snapshot.format === "zstd" ? streamRatio(snapshot.size, snapshot.decodedSize) : undefined,
+    ratio:
+      snapshot.format === "zstd"
+        ? snapshot.tail
+          ? "—"
+          : streamRatio(snapshot.size, snapshot.decodedSize)
+        : undefined,
     size,
     path: directoryOf(snapshot.path),
     origin: "local stream",
@@ -7852,7 +7867,9 @@ function startStreamEventBridge(): void {
       buddyStreamPending = 0;
       buddyStreamFocusLine = null;
       resetStreamRate();
-      toast(w.t("Stream reloaded"), payload.path.split(/[\\/]/).pop() ?? payload.path);
+      if (!payload.silent) {
+        toast(w.t("Stream reloaded"), payload.path.split(/[\\/]/).pop() ?? payload.path);
+      }
     } else {
       recordStreamTraffic(payload.events.length);
       buddyStreamEvents = [...buddyStreamEvents, ...payload.events];
@@ -7871,16 +7888,20 @@ function startStreamEventBridge(): void {
       ...buddyStreamSnapshot,
       lines: payload.totalLines,
       decodedSize: payload.decodedSize,
-      events: buddyStreamEvents
+      events: buddyStreamEvents,
+      tail: payload.tail ?? buddyStreamSnapshot.tail
     };
     const files = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES");
     const file = files.find((item) => item.id === buddyStreamSnapshot?.path);
     if (!file) return;
     file.lines = payload.totalLines;
-    file.lineLabel = streamLineLabel(payload.totalLines);
+    file.tail = buddyStreamSnapshot.tail === true;
+    file.lineLabel = streamLineLabelWithTail(payload.totalLines, file.tail);
     file.decodedMB = payload.decodedSize / (1024 * 1024);
     file.decoded = formatBytes(payload.decodedSize);
-    file.ratio = streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
+    file.ratio = file.tail
+      ? "—"
+      : streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
     file.counts = streamLevelCounts(buddyStreamEvents).labels;
     buddyConversation = payload.conversation ?? buddyConversation;
     if (payload.audit) {

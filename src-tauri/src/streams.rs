@@ -17,7 +17,11 @@ use zstd::zstd_safe;
 
 const MAX_BUFFER_EVENTS: usize = 10_000;
 const MAX_BUFFER_BYTES: usize = 50 * 1024 * 1024;
-const MAX_STREAM_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_STREAM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const TAIL_PLAIN_BYTES: u64 = 64 * 1024 * 1024;
+const TAIL_ZSTD_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_TAIL_DECODED_BYTES: usize = 128 * 1024 * 1024;
+const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +55,25 @@ pub struct StreamSnapshot {
     pub events: Vec<StreamEvent>,
     pub conversation: Conversation,
     pub audit: Vec<AuditEntry>,
+    pub tail: bool,
+    #[serde(skip)]
+    pub follow_offset: u64,
+    #[serde(skip)]
+    pub pending: Vec<u8>,
+}
+
+struct TailRead {
+    events: Vec<StreamEvent>,
+    decoded_size: u64,
+    lines: u64,
+    follow_offset: u64,
+    pending: Vec<u8>,
+}
+
+struct ParsedLines {
+    events: Vec<StreamEvent>,
+    lines: u64,
+    complete_bytes: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -63,6 +86,8 @@ pub struct StreamLivePayload {
     pub total_lines: u64,
     pub decoded_size: u64,
     pub reset: bool,
+    pub tail: bool,
+    pub silent: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -106,8 +131,6 @@ impl StreamManager {
         let format = stream_format(&target)
             .ok_or_else(|| "only .jsonl, .jsonl.zstd and .jsonl.zst streams are supported".to_string())?;
         let snapshot = read_snapshot_cached(&key, cache_dir)?;
-        let metadata = fs::metadata(&target)
-            .map_err(|err| format!("could not read {}: {err}", target.display()))?;
         let parent = target
             .parent()
             .ok_or_else(|| "stream has no parent directory".to_string())?
@@ -129,16 +152,53 @@ impl StreamManager {
         let thread_target = target.clone();
         let thread_key = key.clone();
         let thread_cache_dir = cache_dir.to_path_buf();
-        let initial_offset = metadata.len();
-        let mut offset = initial_offset;
+        let mut offset = snapshot.follow_offset;
         let mut line_no = snapshot.lines;
         let mut decoded_size = snapshot.decoded_size;
         let mut compressed_pending: Vec<u8> = Vec::new();
-        let mut decoded_pending: Vec<u8> = Vec::new();
+        let mut decoded_pending: Vec<u8> = snapshot.pending.clone();
         let mut event_buffer = snapshot.events.clone();
+        let _ = app.emit(
+            "stream-live",
+            StreamLivePayload {
+                path: key.clone(),
+                events: snapshot.events.clone(),
+                conversation: snapshot.conversation.clone(),
+                audit: snapshot.audit.clone(),
+                total_lines: snapshot.lines,
+                decoded_size: snapshot.decoded_size,
+                reset: true,
+                tail: snapshot.tail,
+                silent: true,
+            },
+        );
+        let mut tail_mode = snapshot.tail;
 
         let join = thread::spawn(move || {
             let _watcher = watcher;
+            let result = process_change(
+                &thread_app,
+                &thread_target,
+                &thread_key,
+                format,
+                &mut offset,
+                &mut line_no,
+                &mut decoded_size,
+                &mut compressed_pending,
+                &mut decoded_pending,
+                &mut event_buffer,
+                &mut tail_mode,
+                &thread_cache_dir,
+            );
+            if let Err(message) = result {
+                let _ = thread_app.emit(
+                    "stream-error",
+                    StreamErrorPayload {
+                        path: thread_key.clone(),
+                        message,
+                    },
+                );
+            }
             while !thread_stop.load(Ordering::SeqCst) {
                 match receiver.recv_timeout(Duration::from_millis(250)) {
                     Ok(Ok(event)) => {
@@ -162,6 +222,7 @@ impl StreamManager {
                             &mut compressed_pending,
                             &mut decoded_pending,
                             &mut event_buffer,
+                            &mut tail_mode,
                             &thread_cache_dir,
                         );
                         if let Err(message) = result {
@@ -231,30 +292,65 @@ fn read_snapshot_impl(
         .ok_or_else(|| "only .jsonl, .jsonl.zstd and .jsonl.zst streams are supported".to_string())?;
     let metadata = fs::metadata(&canonical)
         .map_err(|err| format!("could not read {}: {err}", canonical.display()))?;
-    if metadata.len() > MAX_STREAM_BYTES {
-        return Err("stream file is larger than the 256 MB viewer limit".to_string());
+    let size = metadata.len();
+    if size > MAX_STREAM_BYTES {
+        return Err("stream file is larger than the 2 GB viewer limit".to_string());
     }
-    let bytes = fs::read(&canonical)
-        .map_err(|err| format!("could not read {}: {err}", canonical.display()))?;
-    let decoded = if format == "zstd" {
-        zstd::stream::decode_all(&bytes[..])
-            .map_err(|err| format!("could not decode zstd stream: {err}"))?
+    let tail_window = if format == "zstd" {
+        TAIL_ZSTD_BYTES
     } else {
-        bytes
+        TAIL_PLAIN_BYTES
     };
-    let decoded_size = decoded.len() as u64;
-    let text = String::from_utf8_lossy(&decoded);
-    let total_lines = text.lines().count() as u64;
-    let mut all_events = Vec::new();
-    let mut line_no = 0u64;
-    for line in text.lines() {
-        line_no += 1;
-        if line.trim().is_empty() {
-            continue;
-        }
-        all_events.push(parse_event(line_no, line));
-    }
-    let mut events = all_events;
+    let (mut events, decoded_size, total_lines, tail, follow_offset, pending) =
+        if size > tail_window {
+            let tail = if format == "zstd" {
+                read_zstd_tail(&canonical, size, tail_window)?
+            } else {
+                read_plain_tail(&canonical, size, tail_window)?
+            };
+            (
+                tail.events,
+                tail.decoded_size,
+                tail.lines,
+                true,
+                tail.follow_offset,
+                tail.pending,
+            )
+        } else {
+            let file = File::open(&canonical)
+                .map_err(|err| format!("could not read {}: {err}", canonical.display()))?;
+            let mut bytes = Vec::with_capacity(size as usize);
+            let mut reader = file.take(size);
+            reader
+                .read_to_end(&mut bytes)
+                .map_err(|err| format!("could not read {}: {err}", canonical.display()))?;
+            let decoded = if format == "zstd" {
+                zstd::stream::decode_all(&bytes[..])
+                    .map_err(|err| format!("could not decode zstd stream: {err}"))?
+            } else {
+                bytes
+            };
+            let decoded_size = decoded.len() as u64;
+            let text = String::from_utf8_lossy(&decoded);
+            let total_lines = text.lines().count() as u64;
+            let mut all_events = Vec::new();
+            let mut line_no = 0u64;
+            for line in text.lines() {
+                line_no += 1;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                all_events.push(parse_event(line_no, line));
+            }
+            (
+                all_events,
+                decoded_size,
+                total_lines,
+                false,
+                size,
+                Vec::new(),
+            )
+        };
     if let Some(cache_dir) = cache_dir {
         let archive = archive_path(cache_dir, &canonical);
         let dropped = trim_event_buffer_collect(&mut events);
@@ -276,13 +372,171 @@ fn read_snapshot_impl(
         path: path_string,
         name,
         format: format.to_string(),
-        size: metadata.len(),
+        size,
         decoded_size,
         lines: total_lines,
         events,
         conversation,
         audit,
+        tail,
+        follow_offset,
+        pending,
     })
+}
+
+fn read_plain_tail(path: &Path, size: u64, window: u64) -> Result<TailRead, String> {
+    let start = size.saturating_sub(window);
+    let probe_start = start.saturating_sub(1);
+    let prefix = if start > 0 { 1usize } else { 0 };
+    let mut file = File::open(path)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    file.seek(SeekFrom::Start(probe_start))
+        .map_err(|err| format!("could not seek {}: {err}", path.display()))?;
+    let mut bytes = Vec::with_capacity(window as usize + prefix);
+    file.read_to_end(&mut bytes)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    let at_line_boundary = start == 0 || bytes.first() == Some(&b'\n');
+    let offset = if at_line_boundary {
+        prefix
+    } else {
+        match bytes[prefix..].iter().position(|byte| *byte == b'\n') {
+            Some(position) => prefix + position + 1,
+            None => {
+                return Ok(TailRead {
+                    events: Vec::new(),
+                    decoded_size: (bytes.len() - prefix) as u64,
+                    lines: 0,
+                    follow_offset: start,
+                    pending: Vec::new(),
+                });
+            }
+        }
+    };
+    let parsed = parse_complete_lines(&bytes[offset..], 1, false);
+    Ok(TailRead {
+        events: parsed.events,
+        decoded_size: (bytes.len() - offset) as u64,
+        lines: parsed.lines,
+        follow_offset: probe_start + offset as u64 + parsed.complete_bytes as u64,
+        pending: Vec::new(),
+    })
+}
+
+fn parse_complete_lines(bytes: &[u8], start_line: u64, skip_first: bool) -> ParsedLines {
+    let mut events = Vec::new();
+    let mut line_no = start_line.saturating_sub(1);
+    let mut cursor = 0usize;
+    let mut complete_bytes = 0usize;
+    let mut first = true;
+    while let Some(position) = bytes[cursor..].iter().position(|byte| *byte == b'\n') {
+        let end = cursor + position;
+        let line_bytes = &bytes[cursor..end];
+        cursor = end + 1;
+        complete_bytes = cursor;
+        if first {
+            first = false;
+            if skip_first {
+                continue;
+            }
+        }
+        let mut line = String::from_utf8_lossy(line_bytes).to_string();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        line_no += 1;
+        if !line.trim().is_empty() {
+            events.push(parse_event(line_no, &line));
+        }
+    }
+    ParsedLines {
+        events,
+        lines: line_no.saturating_sub(start_line.saturating_sub(1)),
+        complete_bytes,
+    }
+}
+
+fn read_zstd_tail(path: &Path, size: u64, window: u64) -> Result<TailRead, String> {
+    let start = size.saturating_sub(window);
+    let mut file = File::open(path)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|err| format!("could not seek {}: {err}", path.display()))?;
+    let mut bytes = Vec::with_capacity(window as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    let mut last_error = None;
+    for offset in zstd_frame_offsets(&bytes) {
+        let (decoded, consumed) = match decode_zstd_tail_frames(&bytes[offset..]) {
+            Ok(result) => result,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        if decoded.is_empty() {
+            continue;
+        }
+        let parsed = parse_complete_lines(&decoded, 1, start > 0 || offset > 0);
+        let pending = decoded[parsed.complete_bytes..].to_vec();
+        return Ok(TailRead {
+            events: parsed.events,
+            decoded_size: decoded.len() as u64,
+            lines: parsed.lines,
+            follow_offset: start + offset as u64 + consumed as u64,
+            pending,
+        });
+    }
+    Err(match last_error {
+        Some(error) => format!("could not decode the zstd stream tail: {error}"),
+        None => format!(
+            "could not find a complete zstd frame in the last {} MB of this stream",
+            window / (1024 * 1024)
+        ),
+    })
+}
+
+fn zstd_frame_offsets(bytes: &[u8]) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    if bytes.len() < ZSTD_FRAME_MAGIC.len() {
+        return offsets;
+    }
+    for index in 0..=bytes.len() - ZSTD_FRAME_MAGIC.len() {
+        if bytes[index..index + ZSTD_FRAME_MAGIC.len()] == ZSTD_FRAME_MAGIC {
+            offsets.push(index);
+            if offsets.len() >= 1024 {
+                break;
+            }
+        }
+    }
+    offsets
+}
+
+fn decode_zstd_tail_frames(bytes: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    let mut cursor = 0usize;
+    let mut decoded = Vec::new();
+    let mut frames = 0usize;
+    while cursor < bytes.len() {
+        let frame_size = match zstd_safe::find_frame_compressed_size(&bytes[cursor..]) {
+            Ok(size) if size > 0 && cursor + size <= bytes.len() => size,
+            _ => break,
+        };
+        let frame = &bytes[cursor..cursor + frame_size];
+        let frame_decoded = zstd::stream::decode_all(frame)
+            .map_err(|err| format!("could not decode an appended zstd frame: {err}"))?;
+        if decoded.len() + frame_decoded.len() > MAX_TAIL_DECODED_BYTES {
+            return Err(format!(
+                "the zstd tail decodes to more than {} MB",
+                MAX_TAIL_DECODED_BYTES / (1024 * 1024)
+            ));
+        }
+        decoded.extend_from_slice(&frame_decoded);
+        cursor += frame_size;
+        frames += 1;
+    }
+    if frames == 0 {
+        return Err("no complete zstd frame was found".to_string());
+    }
+    Ok((decoded, cursor))
 }
 
 fn trim_event_buffer(events: &mut Vec<StreamEvent>) {
@@ -421,6 +675,7 @@ pub fn recent_from_snapshot(snapshot: &StreamSnapshot) -> RecentStream {
         decoded_size: snapshot.decoded_size,
         lines: snapshot.lines,
         opened_at: crate::data::now_iso(),
+        tail: snapshot.tail,
     }
 }
 
@@ -439,6 +694,7 @@ fn process_change(
     compressed_pending: &mut Vec<u8>,
     decoded_pending: &mut Vec<u8>,
     event_buffer: &mut Vec<StreamEvent>,
+    tail_mode: &mut bool,
     cache_dir: &Path,
 ) -> Result<(), String> {
     let metadata = match fs::metadata(target) {
@@ -448,6 +704,7 @@ fn process_change(
     if metadata.len() < *offset {
         let snapshot = read_snapshot_cached(key, cache_dir)?;
         *event_buffer = snapshot.events.clone();
+        *tail_mode = snapshot.tail;
         let _ = app.emit(
             "stream-live",
             StreamLivePayload {
@@ -458,13 +715,16 @@ fn process_change(
                 total_lines: snapshot.lines,
                 decoded_size: snapshot.decoded_size,
                 reset: true,
+                tail: *tail_mode,
+                silent: false,
             },
         );
-        *offset = metadata.len();
+        *offset = snapshot.follow_offset;
         *line_no = snapshot.lines;
         *decoded_size = snapshot.decoded_size;
         compressed_pending.clear();
         decoded_pending.clear();
+        decoded_pending.extend_from_slice(&snapshot.pending);
         return Ok(());
     }
     if metadata.len() == *offset {
@@ -508,6 +768,8 @@ fn process_change(
                 total_lines: *line_no,
                 decoded_size: *decoded_size,
                 reset: false,
+                tail: *tail_mode,
+                silent: false,
             },
         );
     }
@@ -600,6 +862,133 @@ mod tests {
         assert_eq!(event.line, 3);
         assert_eq!(event.level.as_deref(), Some("WARN"));
         assert_eq!(event.name.as_deref(), Some("rate_limit"));
+    }
+
+    #[test]
+    fn reads_only_the_tail_of_plain_streams() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("tail.jsonl");
+        let last = "{\"event\":\"three\"}\n{\"event\":\"four\"}\n";
+        let content = format!("{{\"event\":\"one\"}}\n{{\"event\":\"two\"}}\n{last}");
+        fs::write(&path, &content).expect("tail stream");
+        let size = fs::metadata(&path).expect("metadata").len();
+        let tail = read_plain_tail(&path, size, last.len() as u64 + 5).expect("plain tail");
+        assert_eq!(tail.lines, 2);
+        assert_eq!(tail.events.len(), 2);
+        assert_eq!(tail.events[0].name.as_deref(), Some("three"));
+        assert_eq!(tail.events[1].name.as_deref(), Some("four"));
+        assert_eq!(tail.events[0].line, 1);
+        assert_eq!(tail.follow_offset, size);
+    }
+
+    #[test]
+    fn keeps_the_first_line_when_the_tail_starts_at_a_line_boundary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("boundary.jsonl");
+        let last = "{\"event\":\"three\"}\n";
+        let content = format!("{{\"event\":\"one\"}}\n{{\"event\":\"two\"}}\n{last}");
+        fs::write(&path, &content).expect("boundary stream");
+        let size = fs::metadata(&path).expect("metadata").len();
+        let tail = read_plain_tail(&path, size, last.len() as u64).expect("plain tail");
+        assert_eq!(tail.lines, 1);
+        assert_eq!(tail.events.len(), 1);
+        assert_eq!(tail.events[0].name.as_deref(), Some("three"));
+    }
+
+    #[test]
+    fn keeps_the_partial_last_line_for_following() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("partial.jsonl");
+        let partial = "{\"event\":\"two\"}";
+        let content = format!("{{\"event\":\"one\"}}\n{partial}");
+        fs::write(&path, &content).expect("partial stream");
+        let size = fs::metadata(&path).expect("metadata").len();
+        let tail = read_plain_tail(&path, size, 1024).expect("plain tail");
+        assert_eq!(tail.lines, 1);
+        assert_eq!(tail.events.len(), 1);
+        assert_eq!(tail.events[0].name.as_deref(), Some("one"));
+        assert_eq!(
+            tail.follow_offset,
+            content.len() as u64 - partial.len() as u64
+        );
+    }
+
+    #[test]
+    fn reads_a_zstd_tail_from_a_frame_boundary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("tail.jsonl.zstd");
+        let frames = [
+            b"{\"event\":\"one\"}\n{\"event\":\"two\"}\n".as_slice(),
+            b"{\"event\":\"three\"}\n{\"event\":\"four\"}\n".as_slice(),
+            b"{\"event\":\"five\"}\n{\"event\":\"six\"}\n".as_slice(),
+        ];
+        let encoded: Vec<Vec<u8>> = frames
+            .iter()
+            .map(|frame| zstd::stream::encode_all(*frame, 3).expect("encode frame"))
+            .collect();
+        let mut bytes = Vec::new();
+        for frame in &encoded {
+            bytes.extend_from_slice(frame);
+        }
+        fs::write(&path, &bytes).expect("zstd tail stream");
+        let size = bytes.len() as u64;
+        let last_frame = encoded.last().expect("last frame").len() as u64;
+        let tail = read_zstd_tail(&path, size, last_frame + encoded[1].len() as u64)
+            .expect("zstd tail");
+        assert_eq!(tail.lines, 3);
+        assert_eq!(tail.events.len(), 3);
+        assert_eq!(tail.events[0].name.as_deref(), Some("four"));
+        assert_eq!(tail.events[2].name.as_deref(), Some("six"));
+        assert_eq!(tail.follow_offset, size);
+    }
+
+    #[test]
+    fn carries_a_partial_zstd_line_into_follow() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("partial.jsonl.zstd");
+        let first = zstd::stream::encode_all(
+            b"{\"event\":\"one\"}\n{\"event\":\"two\"".as_slice(),
+            3,
+        )
+        .expect("first frame");
+        let second = zstd::stream::encode_all(b",\"level\":\"info\"}\n".as_slice(), 3)
+            .expect("second frame");
+        fs::write(&path, &first).expect("partial zstd stream");
+        let size = first.len() as u64;
+        let tail = read_zstd_tail(&path, size, size).expect("zstd tail");
+        assert_eq!(tail.events.len(), 1);
+        assert_eq!(tail.events[0].name.as_deref(), Some("one"));
+        assert_eq!(tail.pending, b"{\"event\":\"two\"");
+
+        let mut line_no = tail.lines;
+        let mut decoded_size = tail.decoded_size;
+        let mut compressed_pending = Vec::new();
+        let mut decoded_pending = tail.pending.clone();
+        let events = consume_append(
+            "zstd",
+            &second,
+            &mut line_no,
+            &mut decoded_size,
+            &mut compressed_pending,
+            &mut decoded_pending,
+        )
+        .expect("follow append");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].line, tail.lines + 1);
+        let value: serde_json::Value =
+            serde_json::from_str(&events[0].raw).expect("complete line");
+        assert_eq!(value["event"], "two");
+        assert_eq!(value["level"], "info");
+    }
+
+    #[test]
+    fn rejects_streams_larger_than_the_viewer_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("huge.jsonl");
+        let file = File::create(&path).expect("create");
+        file.set_len(MAX_STREAM_BYTES + 1).expect("sparse file");
+        let error = read_snapshot(path.to_string_lossy().as_ref()).expect_err("too large");
+        assert!(error.contains("2 GB"));
     }
 
     #[test]
