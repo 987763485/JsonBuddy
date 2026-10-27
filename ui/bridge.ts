@@ -649,6 +649,31 @@ function updateEditorHighlight(): void {
   });
 }
 
+function focusEditorLine(line: number): void {
+  const view = ensureEditor();
+  if (!view || !Number.isFinite(line)) return;
+  const bounded = Math.max(1, Math.min(view.state.doc.lines, Math.round(line)));
+  const target = view.state.doc.line(bounded);
+  view.dispatch({
+    selection: { anchor: target.from, head: target.to },
+    scrollIntoView: true
+  });
+  view.focus();
+}
+
+function patchSearchReveal(): void {
+  const originalJump = w.jumpToJsonSearchResult;
+  w.jumpToJsonSearchResult = (index: number) => {
+    originalJump(index);
+    try {
+      const line = evalGlobal<number | null>("editorFocusLine");
+      if (typeof line === "number") focusEditorLine(line);
+    } catch {
+      // Search state is owned by the prototype.
+    }
+  };
+}
+
 function patchDocumentFunctions(): void {
   const originalDocumentSize = w.documentSize;
   const originalDocumentLineCount = w.documentLineCount;
@@ -666,6 +691,12 @@ function patchDocumentFunctions(): void {
   w.renderCode = () => {
     originalRenderCode();
     syncEditor(true);
+    try {
+      const line = evalGlobal<number | null>("editorFocusLine");
+      if (typeof line === "number") focusEditorLine(line);
+    } catch {
+      // The prototype clears the focus line when closing search.
+    }
     scheduleTreeRender();
     scheduleTableRender();
     scheduleGraphRender();
@@ -4217,6 +4248,80 @@ function patchImportExport(): void {
   };
 }
 
+
+function patchMockGeneration(): void {
+  const originalOpen = w.openMockGenerate;
+  const originalUpdate = w.updateGenUI;
+  const clampRecords = (value: number) =>
+    Math.max(1, Math.min(1000, Math.round(value) || 100));
+  const recordsValue = () => {
+    const input = document.getElementById("genRecords") as HTMLInputElement | null;
+    return clampRecords(Number(input?.value) || 100);
+  };
+  w.openMockGenerate = () => {
+    const input = document.getElementById("genRecords") as HTMLInputElement | null;
+    if (input && !input.dataset.buddyDefault) {
+      input.value = "100";
+      input.dataset.buddyDefault = "1";
+    }
+    originalOpen();
+  };
+  w.adjustGenRecords = (delta: number) => {
+    const input = document.getElementById("genRecords") as HTMLInputElement | null;
+    if (!input) return;
+    input.value = String(clampRecords((Number(input.value) || 100) + delta));
+    w.updateGenUI?.();
+  };
+  w.updateGenUI = () => {
+    originalUpdate();
+    const count = recordsValue();
+    w.setText("genPreviewCount", `${count} items`);
+    w.setText(
+      "genAction",
+      `Generate ${count} record${count === 1 ? "" : "s"}`
+    );
+  };
+  w.generateMockData = () => {
+    const seedInput = document.getElementById("genSeed") as HTMLInputElement | null;
+    const count = recordsValue();
+    const seed = Math.max(1, Number(seedInput?.value) || 42);
+    const shape = w.mockGenShape?.();
+    if (!shape?.ep) return;
+    const arrayOnly =
+      (document.getElementById("genTarget") as HTMLSelectElement | null)?.value ===
+      "Array only";
+    const payload = w.mockGeneratedPayload?.(
+      shape,
+      count,
+      seed,
+      w.mockGenOptions?.(),
+      arrayOnly
+    );
+    if (payload === undefined) {
+      toast("Could not generate data", "The response has no usable shape.");
+      return;
+    }
+    shape.ep.generated = JSON.stringify(payload, null, 2);
+    shape.ep.generatedInfo = {
+      n: shape.rootArray || shape.arrayKey ? count : 1,
+      seed
+    };
+    evalGlobal("activeMockTab = 'response'");
+    w.closeMockGenerate?.();
+    w.renderMockEndpoint?.(evalGlobal<number>("activeMockEndpointIndex") || 0);
+    void flushMockSave();
+    toast(
+      "Mock data generated",
+      `${shape.ep.method} ${shape.ep.path} · ${count} record${count === 1 ? "" : "s"}`
+    );
+  };
+  const input = document.getElementById("genRecords") as HTMLInputElement | null;
+  if (input && !input.dataset.buddyDefault) {
+    input.value = "100";
+    input.dataset.buddyDefault = "1";
+  }
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -5261,11 +5366,13 @@ async function bootstrap(): Promise<void> {
     patchMockFlow();
     startMockEventBridge();
     patchAuditFlow();
+    patchSearchReveal();
     installTreeView();
     installTableData();
     installGraphData();
     installCodegen();
     patchImportExport();
+    patchMockGeneration();
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
