@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:debug": "node scripts/tauri-debug.mjs",
     "tauri:build": "tauri build"
   },
   "dependencies": {

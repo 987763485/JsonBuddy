@@ -96,14 +96,28 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, language: &str) -> tauri::Result<Me
         })
         .build()?;
 
+    #[cfg(debug_assertions)]
+    let dev_menu = SubmenuBuilder::new(app, if zh { "开发" } else { "Develop" })
+        .item(
+            &MenuItemBuilder::with_id(
+                "menu-dev-tools",
+                if zh {
+                    "开发者工具"
+                } else {
+                    "Developer Tools"
+                },
+            )
+            .build(app)?,
+        )
+        .build()?;
+
     let builder = MenuBuilder::new(app);
     #[cfg(target_os = "macos")]
     let builder = builder.item(&app_menu);
-    builder
-        .item(&file_menu)
-        .item(&edit_menu)
-        .item(&window_menu)
-        .build()
+    let builder = builder.item(&file_menu).item(&edit_menu);
+    #[cfg(debug_assertions)]
+    let builder = builder.item(&dev_menu);
+    builder.item(&window_menu).build()
 }
 
 pub fn install<R: Runtime>(app: &AppHandle<R>, language: &str) -> tauri::Result<()> {

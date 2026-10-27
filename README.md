@@ -59,6 +59,14 @@ npm install
 npm run tauri:dev
 ```
 
+调试模式启动开发构建并自动打开 Web Inspector：
+
+```bash
+npm run tauri:debug
+```
+
+调试构建的“开发”菜单包含“开发者工具”，可随时切换 Web Inspector；快捷键为 macOS `Cmd+Option+I`、Windows/Linux `Ctrl+Shift+I`。macOS/Linux 使用 WebKit Web Inspector，Windows 使用 WebView2 DevTools。发布构建不包含该菜单项。也可以使用 `JSON_BUDDY_DEVTOOLS=1 npm run tauri:dev` 手动启用自动打开。
+
 只构建界面：
 
 ```bash

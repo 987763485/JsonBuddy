@@ -419,6 +419,17 @@ fn set_mock_project_running(
     state.mock.set_project_running(app, &project_id, running)
 }
 
+#[cfg(debug_assertions)]
+fn toggle_devtools(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_devtools_open() {
+            window.close_devtools();
+        } else {
+            window.open_devtools();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -445,9 +456,24 @@ pub fn run() {
                 mock,
                 audit,
             });
+            #[cfg(debug_assertions)]
+            if std::env::var_os("JSON_BUDDY_DEVTOOLS").is_some() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                    if let Some(window) = handle.get_webview_window("main") {
+                        window.open_devtools();
+                    }
+                });
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
+            #[cfg(debug_assertions)]
+            if event.id().as_ref() == "menu-dev-tools" {
+                toggle_devtools(app);
+                return;
+            }
             if let Err(error) = app.emit("buddy-menu", event.id().as_ref().to_string()) {
                 eprintln!("could not forward menu event: {error}");
             }
