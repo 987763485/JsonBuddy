@@ -590,9 +590,64 @@ function openedLabel(value: string): string {
   });
 }
 
+const BUDDY_TOAST_ZH: Record<string, string> = {
+  "Could not restart mock server": "无法重启 Mock 服务",
+  "Could not save settings": "无法保存设置",
+  "Could not open compare file": "无法打开对比文件",
+  "Could not save audit settings": "无法保存审计设置",
+  "Could not acknowledge audit event": "无法确认审计事件",
+  "Could not save generated code": "无法保存生成的代码",
+  "Nothing to export": "没有可导出内容",
+  "No tabular data found.": "未找到表格数据。",
+  "Could not export CSV": "无法导出 CSV",
+  "Could not export Excel": "无法导出 Excel",
+  "Could not export mock API": "无法导出 Mock API",
+  "File is too large": "文件过大",
+  "Maximum import size is 50 MB.": "最大导入大小为 50 MB。",
+  "Could not import file": "无法导入文件",
+  "Could not generate data": "无法生成数据",
+  "The response has no usable shape.": "响应中没有可用的结构。",
+  "Mock data generated": "已生成 Mock 数据",
+  "Could not open stream": "无法打开流",
+  "Could not follow stream": "无法跟随流",
+  "Could not remove stream": "无法移除流",
+  "Stream watcher error": "流监听错误",
+  "Could not update mock response": "无法更新 Mock 响应",
+  "Could not start mock server": "无法启动 Mock 服务",
+  "Could not stop mock server": "无法停止 Mock 服务",
+  "Could not save mock project": "无法保存 Mock 项目",
+  "Could not delete mock project": "无法删除 Mock 项目",
+  "Could not save imported schema": "无法保存导入的 Schema",
+  "Could not open document": "无法打开文档",
+  "New document created": "已创建新文档",
+  "Could not create document": "无法创建文档",
+  "Opened JSON file": "已打开 JSON 文件",
+  "Open or create a file first.": "请先打开或创建文件。",
+  "Document saved": "文档已保存",
+  "Could not save document": "无法保存文档",
+  "Removed from recent files": "已从最近文件移除",
+  "Could not remove recent file": "无法移除最近文件",
+  "Could not load local data": "无法加载本地数据",
+  "Could not open file": "无法打开文件",
+  "Could not import CSV": "无法导入 CSV",
+  "Could not format JSON": "无法格式化 JSON",
+  "Could not sort JSON": "无法排序 JSON",
+  "Could not locate value in the active document": "未在当前文档中找到该值",
+  "Export copied": "导出内容已复制",
+  "Revealed in source": "已在源码中显示",
+  "Copied": "已复制"
+};
+
+function buddyToastText(text: string): string {
+  return viewLanguageIsZh() ? BUDDY_TOAST_ZH[text] ?? text : text;
+}
+
 function toast(message: string, detail?: string): void {
   try {
-    w.showToast(message, detail);
+    w.showToast(
+      buddyToastText(message),
+      detail == null ? undefined : buddyToastText(detail)
+    );
   } catch {
     console.info(message, detail ?? "");
   }
@@ -914,6 +969,17 @@ function applyBackendSettings(settings: AppSettings): void {
   } catch (error) {
     console.warn("could not apply settings", error);
   }
+}
+
+function patchToastLocalization(): void {
+  if (typeof w.showToast !== "function") return;
+  const originalShowToast = w.showToast;
+  w.showToast = (message: unknown, detail?: unknown) => {
+    const label = buddyToastText(String(message ?? ""));
+    const sub =
+      detail == null ? undefined : buddyToastText(String(detail));
+    originalShowToast(label, sub);
+  };
 }
 
 function patchClipboard(): void {
@@ -7525,6 +7591,7 @@ async function bootstrap(): Promise<void> {
     const data = await invoke<BootstrapData>("bootstrap");
     patchDocumentFunctions();
     patchSettingsPersistence();
+    patchToastLocalization();
     patchClipboard();
     patchJsonDocumentFlow();
     installGlobalFileDrop();
