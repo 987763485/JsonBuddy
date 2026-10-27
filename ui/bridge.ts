@@ -612,6 +612,8 @@ function ensureEditor(): EditorView | null {
               }
             }, 130);
             scheduleTreeRender();
+            scheduleTableRender();
+            scheduleGraphRender();
           })
         ]
       })
@@ -664,6 +666,8 @@ function patchDocumentFunctions(): void {
     originalRenderCode();
     syncEditor(true);
     scheduleTreeRender();
+    scheduleTableRender();
+    scheduleGraphRender();
   };
   w.applyTheme = (theme: string) => {
     originalApplyTheme(theme);
@@ -2235,6 +2239,722 @@ function installTreeView(): void {
   renderTreeView();
 }
 
+/* ------------------------------------------------------------
+   Data-driven table view
+   ------------------------------------------------------------ */
+
+const tableMeta = { sections: 0, rows: 0 };
+let tableInstalled = false;
+let tableRenderTimer: number | null = null;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function tableTypeClass(value: unknown): string {
+  if (value === null) return "v-null";
+  if (Array.isArray(value)) return "";
+  switch (typeof value) {
+    case "string":
+      return "v-str";
+    case "number":
+      return "v-num num";
+    case "boolean":
+      return "v-bool";
+    case "object":
+      return "";
+    default:
+      return "v-muted";
+  }
+}
+
+function tableCellHtml(value: unknown, path: string): string {
+  if (value === undefined) {
+    return '<td class="v-muted">—</td>';
+  }
+  const type = treeTypeOf(value);
+  const className = tableTypeClass(value);
+  let content = "";
+  if (Array.isArray(value)) {
+    if (value.every((item) => item === null || typeof item !== "object")) {
+      content = value
+        .slice(0, 8)
+        .map((item) => `<span class="tag">${w.escHtml(treePreview(item, 30))}</span>`)
+        .join("");
+      if (value.length > 8) {
+        content += `<span class="v-muted">+${value.length - 8}</span>`;
+      }
+    } else {
+      content = `<span class="v-muted">[${value.length} items]</span>`;
+    }
+  } else if (isPlainObject(value)) {
+    content = `<span class="v-muted">{${Object.keys(value).length} keys}</span>`;
+  } else if (typeof value === "string") {
+    const text = value.replace(/\s+/g, " ").trim();
+    content = w.escHtml(text.length > 140 ? `${text.slice(0, 140)}…` : text);
+  } else if (value === null) {
+    content = '<span class="v-muted">null</span>';
+  } else {
+    content = w.escHtml(String(value));
+  }
+  const dataValue = w
+    .escHtml(JSON.stringify(value) ?? String(value))
+    .replaceAll('"', "&quot;");
+  return `<td class="${className} cell" data-path="${w.escHtml(path)}" data-type="${type}" data-val="${dataValue}" onclick="selectCell(this)">${content}</td>`;
+}
+
+function renderArraySection(
+  key: string,
+  list: unknown[],
+  path: string
+): { html: string; rows: number } {
+  const objects = list.filter(isPlainObject);
+  const objectMode = objects.length > 0;
+  const columns: string[] = [];
+  if (objectMode) {
+    for (const item of objects.slice(0, 120)) {
+      for (const name of Object.keys(item)) {
+        if (!columns.includes(name)) columns.push(name);
+        if (columns.length >= 24) break;
+      }
+      if (columns.length >= 24) break;
+    }
+  }
+  const rows = list.slice(0, 500);
+  const colCount = objectMode ? columns.length : 2;
+  const dataWidth = colCount ? (94 / colCount).toFixed(2) : "94";
+  let cols = `<col style="width:6%" />`;
+  for (let index = 0; index < colCount; index += 1) {
+    cols += `<col style="width:${dataWidth}%" />`;
+  }
+  let head = "";
+  if (objectMode) {
+    head = "<th>#</th>";
+    for (const column of columns) {
+      const numeric =
+        rows.length > 0 &&
+        rows.every((item) => {
+          if (!isPlainObject(item)) return false;
+          const value = item[column];
+          return value === undefined || typeof value === "number";
+        });
+      head += `<th class="${numeric ? "num" : ""}">${w.escHtml(column)}</th>`;
+    }
+  } else {
+    head = "<th>#</th><th>value</th><th>type</th>";
+  }
+  let body = "";
+  rows.forEach((item, index) => {
+    const indexPath = `${path}[${index}]`;
+    body += "<tr>";
+    body += `<td class="idx">${index}</td>`;
+    if (objectMode) {
+      for (const column of columns) {
+        body += tableCellHtml(
+          isPlainObject(item) ? item[column] : undefined,
+          treePathFor(indexPath, column, false)
+        );
+      }
+    } else {
+      body += tableCellHtml(item, indexPath);
+      body += `<td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>`;
+    }
+    body += "</tr>";
+  });
+  if (!rows.length) {
+    body = `<tr><td class="v-muted" colspan="${
+      objectMode ? colCount + 1 : 3
+    }">No rows</td></tr>`;
+  }
+  const notes: string[] = [];
+  if (objectMode && columns.length >= 24) notes.push("first 24 columns");
+  if (list.length > 500) notes.push("first 500 rows");
+  const extra = notes.length ? ` · ${notes.join(" · ")}` : "";
+  return {
+    rows: rows.length,
+    html: `<div class="section-head">
+      <svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-3)"><use href="#i-chev-down"/></svg>
+      <span class="sec-key">${w.escHtml(key)}</span>
+      <span class="sec-type">array</span>
+      <span class="sec-count">${list.length} items${extra}</span>
+      <span class="sec-path">${w.escHtml(path)}</span>
+    </div>
+    <table class="dt"><colgroup>${cols}</colgroup><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+  };
+}
+
+function renderObjectSection(
+  key: string,
+  value: Record<string, unknown>,
+  path: string,
+  title = key
+): { html: string; rows: number } {
+  const entries = Object.entries(value).slice(0, 300);
+  let body = "";
+  for (const [name, item] of entries) {
+    const childPath = treePathFor(path, name, false);
+    body += `<tr>
+      <td class="v-key">${w.escHtml(name)}</td>
+      ${tableCellHtml(item, childPath)}
+      <td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>
+    </tr>`;
+  }
+  if (!entries.length) {
+    body = '<tr><td class="v-muted" colspan="3">Empty object</td></tr>';
+  }
+  return {
+    rows: entries.length,
+    html: `<div class="section-head">
+      <svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-3)"><use href="#i-chev-down"/></svg>
+      <span class="sec-key">${w.escHtml(title)}</span>
+      <span class="sec-type">object</span>
+      <span class="sec-count">${Object.keys(value).length} keys</span>
+      <span class="sec-path">${w.escHtml(path)}</span>
+    </div>
+    <table class="dt">
+      <colgroup><col style="width:24%" /><col style="width:56%" /><col style="width:20%" /></colgroup>
+      <thead><tr><th>key</th><th>value</th><th>type</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>`
+  };
+}
+
+function renderTableData(): void {
+  const sheet = document.querySelector(".table-view .table-sheet");
+  if (!sheet) return;
+  const doc = currentDoc();
+  const source = doc?.text ?? "";
+  const countEl = document.getElementById("tableCount");
+  const inspector = `<div class="table-inspector">
+    <span class="insp-path" id="inspPath">$</span>
+    <span class="insp-type" id="inspType">object</span>
+    <span class="insp-val" id="inspVal">—</span>
+    <span class="spacer"></span>
+    <button class="insp-btn" onclick="copyInspectorPath()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-copy"/></svg>Copy path</button>
+    <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>Reveal in source</button>
+  </div>`;
+  if (!source.trim()) {
+    sheet.innerHTML = `<div class="tree-empty">Open a JSON document to inspect its tables.</div>${inspector}`;
+    tableMeta.sections = 0;
+    tableMeta.rows = 0;
+    if (countEl) countEl.textContent = "No document";
+    return;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    sheet.innerHTML = `<div class="tree-empty">The document is not valid JSON. Fix the syntax to inspect its tables.</div>${inspector}`;
+    tableMeta.sections = 0;
+    tableMeta.rows = 0;
+    if (countEl) countEl.textContent = "Invalid JSON";
+    return;
+  }
+  const parts: string[] = [];
+  let sections = 0;
+  let rows = 0;
+  const push = (result: { html: string; rows: number }) => {
+    parts.push(result.html);
+    sections += 1;
+    rows += result.rows;
+  };
+  if (Array.isArray(value)) {
+    push(renderArraySection("$", value, "$"));
+  } else if (isPlainObject(value)) {
+    const scalars: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (sections >= 24) break;
+      const childPath = treePathFor("$", key, false);
+      if (Array.isArray(item)) {
+        push(renderArraySection(key, item, childPath));
+      } else if (isPlainObject(item) && Object.keys(item).length <= 120) {
+        push(renderObjectSection(key, item, childPath));
+      } else {
+        scalars[key] = item;
+      }
+    }
+    if (Object.keys(scalars).length || sections === 0) {
+      push(renderObjectSection("$", scalars, "$", "root"));
+    }
+  } else {
+    push(
+      renderObjectSection(
+        "$",
+        { value },
+        "$",
+        "root"
+      )
+    );
+  }
+  sheet.innerHTML = parts.join("") + inspector;
+  try {
+    w.closeTableColumns?.();
+  } catch {
+    // The column menu may not be open.
+  }
+  tableMeta.sections = sections;
+  tableMeta.rows = rows;
+  try {
+    const filter = document.getElementById("tableRowFilter") as HTMLInputElement | null;
+    w.filterTableRows?.(filter?.value ?? "");
+  } catch {
+    // The table filter is optional.
+  }
+  if (!document.getElementById("tableRowFilter")) {
+    if (countEl) {
+      countEl.textContent = `${sections} section${sections === 1 ? "" : "s"} · ${rows} row${
+        rows === 1 ? "" : "s"
+      }`;
+    }
+  }
+}
+
+function updateTableCount(query: string): void {
+  const countEl = document.getElementById("tableCount");
+  if (!countEl) return;
+  if (!query.trim()) {
+    countEl.textContent = `${tableMeta.sections} section${
+      tableMeta.sections === 1 ? "" : "s"
+    } · ${tableMeta.rows} row${tableMeta.rows === 1 ? "" : "s"}`;
+    return;
+  }
+  const sheet = document.querySelector(".table-view .table-sheet");
+  if (!sheet) return;
+  const visibleSections = [...sheet.querySelectorAll<HTMLElement>("table.dt")].filter(
+    (table) => !table.hidden
+  ).length;
+  const visibleRows = [...sheet.querySelectorAll<HTMLElement>("table.dt tbody tr")].filter(
+    (row) => !row.hidden
+  ).length;
+  countEl.textContent = `${visibleRows} row${visibleRows === 1 ? "" : "s"} · ${visibleSections} section${
+    visibleSections === 1 ? "" : "s"
+  }`;
+}
+
+function scheduleTableRender(delay = 160): void {
+  if (!tableInstalled) return;
+  if (tableRenderTimer !== null) window.clearTimeout(tableRenderTimer);
+  tableRenderTimer = window.setTimeout(() => {
+    tableRenderTimer = null;
+    try {
+      if (evalGlobal<string>("app.dataset.view") === "table") renderTableData();
+    } catch {
+      // The app may be closing.
+    }
+  }, delay);
+}
+
+function installTableData(): void {
+  if (tableInstalled) return;
+  tableInstalled = true;
+  const originalSetView = w.setView;
+  w.setView = (view: string) => {
+    originalSetView(view);
+    if (view === "table") renderTableData();
+  };
+  const originalFilter = w.filterTableRows;
+  w.filterTableRows = (query: string) => {
+    originalFilter(query);
+    updateTableCount(String(query ?? ""));
+  };
+  renderTableData();
+}
+
+/* ------------------------------------------------------------
+   Data-driven graph view
+   ------------------------------------------------------------ */
+
+interface GraphRowModel {
+  key: string;
+  value: unknown;
+  childId?: string;
+}
+
+interface GraphNodeModel {
+  id: string;
+  key: string;
+  value: unknown;
+  type: string;
+  rows: GraphRowModel[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  parentId?: string;
+}
+
+interface GraphEdgeModel {
+  from: string;
+  to: string;
+  rowIndex: number;
+}
+
+interface GraphModel {
+  nodes: GraphNodeModel[];
+  edges: GraphEdgeModel[];
+}
+
+let buddyGraphModel: GraphModel | null = null;
+let buddyGraphLayout: "horizontal" | "vertical" = "horizontal";
+let graphInstalled = false;
+let graphRenderTimer: number | null = null;
+
+function graphNodeHeight(rows: number): number {
+  return 31 + rows * 22;
+}
+
+function graphNodeHtml(node: GraphNodeModel, selected: boolean): string {
+  const count = Array.isArray(node.value)
+    ? (node.value as unknown[]).length
+    : isPlainObject(node.value)
+      ? Object.keys(node.value).length
+      : 0;
+  let rows = "";
+  node.rows.forEach((row) => {
+    const type = treeTypeOf(row.value);
+    let valueHtml = "";
+    if (row.childId) {
+      valueHtml = `<span class="v type">${
+        Array.isArray(row.value)
+          ? `[${(row.value as unknown[]).length}]`
+          : `{${isPlainObject(row.value) ? Object.keys(row.value).length : 0}}`
+      }</span><i class="port"></i>`;
+    } else if (Array.isArray(row.value)) {
+      valueHtml = `<span class="v type">[${(row.value as unknown[]).length}]</span>`;
+    } else if (isPlainObject(row.value)) {
+      valueHtml = `<span class="v type">{${Object.keys(row.value).length}}</span>`;
+    } else {
+      const className =
+        type === "string"
+          ? "str"
+          : type === "number"
+            ? "num"
+            : type === "boolean"
+              ? "bool"
+              : "nul";
+      valueHtml = `<span class="v ${className}">${w.escHtml(
+        treePreview(row.value, 40)
+      )}</span>`;
+    }
+    rows += `<div class="node-row"><span class="k">${w.escHtml(
+      row.key
+    )}</span>${valueHtml}</div>`;
+  });
+  return `<div class="node${selected ? " sel" : ""}" data-graph-id="${
+    node.id
+  }" style="left:${node.x}px;top:${node.y}px;width:${node.width}px" onclick="selectNode(this)">
+    <div class="node-head">
+      <svg class="i xs chev" viewBox="0 0 24 24"><use href="#i-chev-down"/></svg>
+      <span class="name">${w.escHtml(node.key)}</span>
+      <span class="node-type">${node.type}</span>
+      <span class="node-count">${count}</span>
+    </div>
+    ${rows}
+  </div>`;
+}
+
+function buildGraphModel(root: unknown): GraphModel {
+  const model: GraphModel = { nodes: [], edges: [] };
+  const addNode = (
+    key: string,
+    value: unknown,
+    parentId?: string,
+    parentRow?: number
+  ): GraphNodeModel | null => {
+    if (model.nodes.length >= 12) return null;
+    const node: GraphNodeModel = {
+      id: `g${model.nodes.length}`,
+      key,
+      value,
+      type: Array.isArray(value) ? "array" : isPlainObject(value) ? "object" : treeTypeOf(value),
+      rows: [],
+      x: 0,
+      y: 0,
+      width: parentId ? 180 : 188,
+      height: 0,
+      parentId
+    };
+    node.height = graphNodeHeight(0);
+    model.nodes.push(node);
+    if (parentId && parentRow !== undefined) {
+      model.edges.push({ from: parentId, to: node.id, rowIndex: parentRow });
+    }
+    return node;
+  };
+  const addRows = (node: GraphNodeModel, entries: [string, unknown][], depth: number) => {
+    const visible = entries.slice(0, 7);
+    visible.forEach(([name, child]) => {
+      const row: GraphRowModel = { key: name, value: child };
+      if (
+        depth < 2 &&
+        (Array.isArray(child) || isPlainObject(child)) &&
+        model.nodes.length < 12
+      ) {
+        const childNode = addNode(
+          depth === 0 ? name : `${node.key}[${name}]`,
+          child,
+          node.id,
+          node.rows.length
+        );
+        if (childNode) {
+          row.childId = childNode.id;
+          if (depth === 0 && Array.isArray(child)) {
+            addRows(
+              childNode,
+              (child as unknown[]).slice(0, 7).map((item, index) => [String(index), item]),
+              1
+            );
+          } else if (depth < 2) {
+            const nestedEntries = Array.isArray(child)
+              ? (child as unknown[]).slice(0, 7).map((item, index) => [String(index), item])
+              : Object.entries(child).slice(0, 7);
+            addRows(childNode, nestedEntries as [string, unknown][], depth + 1);
+          }
+        }
+      }
+      node.rows.push(row);
+    });
+    node.height = graphNodeHeight(node.rows.length);
+  };
+  const rootNode = addNode("root", root);
+  if (rootNode) {
+    const entries = Array.isArray(root)
+      ? (root as unknown[]).slice(0, 7).map((item, index) => [String(index), item])
+      : isPlainObject(root)
+        ? Object.entries(root).slice(0, 7)
+        : [["value", root]];
+    addRows(rootNode, entries as [string, unknown][], 0);
+  }
+  return model;
+}
+
+function layoutBuddyGraph(model: GraphModel, vertical: boolean): void {
+  const root = model.nodes.find((node) => !node.parentId);
+  if (!root) return;
+  const depthOne = model.nodes.filter((node) => node.parentId === root.id);
+  const depthTwo = model.nodes.filter(
+    (node) =>
+      node.parentId &&
+      node.parentId !== root.id &&
+      depthOne.some((parent) => parent.id === node.parentId)
+  );
+  const gap = 26;
+  if (!vertical) {
+    root.x = 20;
+    const stackHeight = depthOne.reduce(
+      (sum, node, index) => sum + node.height + (index ? gap : 0),
+      0
+    );
+    root.y = Math.max(30, 34 + (stackHeight - root.height) / 2);
+    let y = 34;
+    for (const node of depthOne) {
+      node.x = 250;
+      node.y = y;
+      y += node.height + gap;
+    }
+    let childY = 34;
+    for (const node of depthTwo) {
+      node.x = 448;
+      node.y = childY;
+      childY += node.height + gap;
+    }
+  } else {
+    root.x = 20;
+    root.y = 20;
+    let y = root.height + 70;
+    for (const node of depthOne) {
+      node.x = 20;
+      node.y = y;
+      y += node.height + gap;
+    }
+    let childY = y + 30;
+    for (const node of depthTwo) {
+      node.x = 250;
+      node.y = childY;
+      childY += node.height + gap;
+    }
+  }
+}
+
+function renderBuddyGraphEdges(): void {
+  const scene = document.querySelector(".graph-scene");
+  const svg = scene?.querySelector(".edges");
+  if (!scene || !svg || !buddyGraphModel) return;
+  const width = Math.max(
+    627,
+    ...buddyGraphModel.nodes.map((node) => node.x + node.width + 30)
+  );
+  const height = Math.max(
+    360,
+    ...buddyGraphModel.nodes.map((node) => node.y + node.height + 30)
+  );
+  (scene as HTMLElement).style.width = `${width}px`;
+  (scene as HTMLElement).style.height = `${height}px`;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  const byId = new Map(buddyGraphModel.nodes.map((node) => [node.id, node]));
+  svg.innerHTML = buddyGraphModel.edges
+    .map((edge) => {
+      const from = byId.get(edge.from);
+      const to = byId.get(edge.to);
+      if (!from || !to) return "";
+      const startX = from.x + from.width;
+      const startY = from.y + 29 + edge.rowIndex * 22 + 11;
+      const endX = to.x;
+      const endY = to.y + 18;
+      const bend = Math.max(32, (endX - startX) / 2);
+      return `<path d="M ${startX} ${startY} C ${startX + bend} ${startY}, ${
+        endX - bend
+      } ${endY}, ${endX} ${endY}" />`;
+    })
+    .join("");
+}
+
+function renderBuddyGraphMinimap(): void {
+  const canvas = document.querySelector(".mm-canvas");
+  if (!canvas || !buddyGraphModel) return;
+  canvas.querySelectorAll(".mm-node").forEach((node) => node.remove());
+  const scene = document.querySelector(".graph-scene") as HTMLElement | null;
+  if (!scene) return;
+  const width = parseFloat(scene.style.width) || 627;
+  const height = parseFloat(scene.style.height) || 790;
+  const scaleX = 128 / Math.max(1, width);
+  const scaleY = 60 / Math.max(1, height);
+  for (const node of buddyGraphModel.nodes) {
+    const block = document.createElement("div");
+    block.className = "mm-node";
+    block.style.left = `${3 + node.x * scaleX}px`;
+    block.style.top = `${3 + node.y * scaleY}px`;
+    block.style.width = `${Math.max(4, node.width * scaleX)}px`;
+    block.style.height = `${Math.max(3, node.height * scaleY)}px`;
+    canvas.appendChild(block);
+  }
+}
+
+function applyBuddyGraphLayout(): void {
+  if (!buddyGraphModel) return;
+  layoutBuddyGraph(buddyGraphModel, buddyGraphLayout === "vertical");
+  const scene = document.querySelector(".graph-scene");
+  if (!scene) return;
+  scene.querySelectorAll<HTMLElement>(".node").forEach((element) => {
+    const id = element.dataset.graphId;
+    const node = buddyGraphModel?.nodes.find((item) => item.id === id);
+    if (!node) return;
+    element.style.left = `${node.x}px`;
+    element.style.top = `${node.y}px`;
+  });
+  renderBuddyGraphEdges();
+  renderBuddyGraphMinimap();
+}
+
+function renderGraphData(): void {
+  const scene = document.querySelector(".graph-scene");
+  if (!scene) return;
+  const doc = currentDoc();
+  const source = doc?.text ?? "";
+  if (!source.trim()) {
+    scene.innerHTML =
+      '<div class="tree-empty" style="position:absolute;left:24px;top:56px">Open a JSON document to inspect its graph.</div>';
+    buddyGraphModel = null;
+    return;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    scene.innerHTML =
+      '<div class="tree-empty" style="position:absolute;left:24px;top:56px">The document is not valid JSON. Fix the syntax to inspect the graph.</div>';
+    buddyGraphModel = null;
+    return;
+  }
+  const model = buildGraphModel(value);
+  buddyGraphModel = model;
+  layoutBuddyGraph(model, buddyGraphLayout === "vertical");
+  scene.innerHTML = `<svg class="edges" viewBox="0 0 627 790" preserveAspectRatio="xMinYMin meet" aria-hidden="true"></svg>${model.nodes
+    .map((node, index) => graphNodeHtml(node, index === 0))
+    .join("")}`;
+  renderBuddyGraphEdges();
+  renderBuddyGraphMinimap();
+  try {
+    w.applyGraphScale?.();
+  } catch {
+    // Scaling is owned by the prototype.
+  }
+}
+
+function scheduleGraphRender(delay = 200): void {
+  if (!graphInstalled) return;
+  if (graphRenderTimer !== null) window.clearTimeout(graphRenderTimer);
+  graphRenderTimer = window.setTimeout(() => {
+    graphRenderTimer = null;
+    try {
+      const view = evalGlobal<string>("app.dataset.view");
+      if (view === "graph" || view === "split") renderGraphData();
+    } catch {
+      // The app may be closing.
+    }
+  }, delay);
+}
+
+function installGraphData(): void {
+  if (graphInstalled) return;
+  graphInstalled = true;
+  const originalSetView = w.setView;
+  w.setView = (view: string) => {
+    originalSetView(view);
+    if (view === "graph" || view === "split") renderGraphData();
+  };
+  w.toggleGraphLayout = () => {
+    buddyGraphLayout = buddyGraphLayout === "horizontal" ? "vertical" : "horizontal";
+    w.setText?.(
+      "graphLayoutLabel",
+      buddyGraphLayout === "vertical" ? "Vertical" : "Horizontal"
+    );
+    applyBuddyGraphLayout();
+  };
+  const scene = document.querySelector(".graph-scene");
+  if (scene) {
+    scene.addEventListener("pointerdown", (event) => {
+      const pointer = event as PointerEvent;
+      if (pointer.button !== 0) return;
+      const target = (pointer.target as HTMLElement | null)?.closest<HTMLElement>(".node");
+      if (!target || !buddyGraphModel) return;
+      let locked = false;
+      try {
+        locked = evalGlobal<boolean>("graphLocked");
+      } catch {
+        locked = false;
+      }
+      if (locked) return;
+      const node = buddyGraphModel.nodes.find((item) => item.id === target.dataset.graphId);
+      if (!node) return;
+      const startX = pointer.clientX;
+      const startY = pointer.clientY;
+      const originX = node.x;
+      const originY = node.y;
+      const scale =
+        (scene.getBoundingClientRect().width || 1) / (scene as HTMLElement).offsetWidth;
+      const move = (moveEvent: PointerEvent) => {
+        if (!buddyGraphModel) return;
+        node.x = originX + (moveEvent.clientX - startX) / (scale || 1);
+        node.y = originY + (moveEvent.clientY - startY) / (scale || 1);
+        target.style.left = `${node.x}px`;
+        target.style.top = `${node.y}px`;
+        renderBuddyGraphEdges();
+        renderBuddyGraphMinimap();
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up, { once: true });
+    });
+  }
+  renderGraphData();
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -3280,6 +4000,8 @@ async function bootstrap(): Promise<void> {
     startMockEventBridge();
     patchAuditFlow();
     installTreeView();
+    installTableData();
+    installGraphData();
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
