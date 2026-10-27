@@ -297,6 +297,36 @@ function installMonitorSidebarControls(): void {
 
 installMonitorSidebarControls();
 
+const REMOVED_COMMAND_PALETTE_ACTIONS = new Set([
+  "validate json",
+  "校验 json",
+  "sort object keys",
+  "排序对象键",
+  "escape string",
+  "转义字符串",
+  "unescape string",
+  "反转义字符串",
+  "generate code",
+  "生成代码",
+  "compare with file",
+  "与文件对比",
+  "export as csv",
+  "导出为 csv"
+]);
+
+function pruneCommandPaletteActions(): void {
+  document.querySelectorAll<HTMLElement>("#cmdList .cmd-item").forEach((item) => {
+    const label = (item.querySelector<HTMLElement>(".lbl")?.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .replace(/[.…]+$/, "")
+      .trim()
+      .toLowerCase();
+    if (REMOVED_COMMAND_PALETTE_ACTIONS.has(label)) item.remove();
+  });
+}
+
+pruneCommandPaletteActions();
+
 const splitterStyle = document.createElement("style");
 splitterStyle.id = "buddy-splitter-styles";
 splitterStyle.textContent = `
