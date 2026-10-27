@@ -119,7 +119,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 - Tauri 集成：`npm run tauri:build -- --debug`
 - 功能模块完成后追加对应单元测试和端到端验证；不修改锁定 UI 文件。
 - 示例 JSONL 文件位于 `example/`，用于流模块测试，不进入 Git。
-- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告、1,000 定义上限、远程 `$ref` 拒绝、导入来源持久化与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。Mock JSON Schema 导出使用单文件 `$defs`，OpenAPI 导出内联响应 Schema 与示例，并支持 YAML/JSON 保存。
+- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告、1,000 定义上限、远程 `$ref` / `$id` 拒绝、导入来源持久化与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。Mock JSON Schema 导出使用单文件 `$defs`，OpenAPI 导出内联响应 Schema 与示例，并支持 YAML/JSON 保存。
 - Mock 路由匹配支持路径参数和可选的查询参数模式（如 `/movies?genre=:genre`），未声明查询参数时忽略请求查询串。
 - Mock 生成参数（记录数、种子、选项、目标）随接口持久化；生成数据不进入项目文件，打开或启动项目时按参数重新生成。`set_mock_runtime_response` 仅更新内存，服务优先返回运行期响应，项目保存时保留运行期响应但序列化时跳过。
 - OpenAPI 导出默认 YAML；在原生保存对话框中选择 `.json` 文件名时，导出同一 OpenAPI 文档的 JSON 表示。
