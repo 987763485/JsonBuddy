@@ -111,16 +111,31 @@ monitorChromeStyle.textContent = `
     justify-self: center;
     margin-left: 0;
   }
-  .side-tabs > .side-close {
+  .side-detail-head {
+    flex: 0 0 39px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line);
+    user-select: none;
+  }
+  .side-detail-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    color: var(--ink);
+  }
+  .side-detail-head > .side-close {
     width: 22px;
     height: 22px;
     margin-left: auto;
     flex: 0 0 auto;
     color: var(--ink-4);
   }
-  .side-tabs > .side-close .i { color: var(--ink-4); }
-  .side-tabs > .side-close:hover { color: var(--ink-2); }
-  .side-tabs > .side-close:hover .i { color: var(--ink-2); }
+  .side-detail-head > .side-close .i { color: var(--ink-4); }
+  .side-detail-head > .side-close:hover { color: var(--ink-2); }
+  .side-detail-head > .side-close:hover .i { color: var(--ink-2); }
   .live-panel.buddy-side-collapsed,
   .chat-side.buddy-side-collapsed {
     flex: 0 0 32px !important;
@@ -128,8 +143,10 @@ monitorChromeStyle.textContent = `
     min-width: 32px;
     overflow: hidden;
   }
+  .live-panel.buddy-side-collapsed > .side-detail-head,
   .live-panel.buddy-side-collapsed > .side-tabs,
   .live-panel.buddy-side-collapsed > .side-pane,
+  .chat-side.buddy-side-collapsed > .side-detail-head,
   .chat-side.buddy-side-collapsed > .side-tabs,
   .chat-side.buddy-side-collapsed > .side-pane { display: none !important; }
   .buddy-side-splitter-hidden { display: none !important; }
@@ -181,13 +198,15 @@ function updateMonitorSidebarChrome(): void {
   const zh = streamLanguageIsZh();
   const closeLabel = zh ? "关闭详情" : "Close details";
   const showLabel = zh ? "显示详情" : "Show details";
-  const railLabel = zh ? "详情" : "Details";
+  const detailLabel = zh ? "详情" : "Details";
   for (const sidebar of monitorSidebars()) {
     sidebar.classList.toggle("buddy-side-collapsed", monitorSideCollapsed);
     const splitter = sidebar.previousElementSibling;
     if (splitter instanceof HTMLElement && splitter.classList.contains("cmp-splitter")) {
       splitter.classList.toggle("buddy-side-splitter-hidden", monitorSideCollapsed);
     }
+    const title = sidebar.querySelector<HTMLElement>(".side-detail-title");
+    if (title) title.textContent = detailLabel;
     const close = sidebar.querySelector<HTMLButtonElement>(".side-close");
     if (close) {
       close.title = closeLabel;
@@ -198,7 +217,7 @@ function updateMonitorSidebarChrome(): void {
       reopen.title = showLabel;
       reopen.setAttribute("aria-label", showLabel);
       const label = reopen.querySelector<HTMLElement>(".buddy-side-reopen-label");
-      if (label) label.textContent = railLabel;
+      if (label) label.textContent = detailLabel;
     }
   }
 }
@@ -206,7 +225,16 @@ function updateMonitorSidebarChrome(): void {
 function installMonitorSidebarControls(): void {
   for (const sidebar of monitorSidebars()) {
     const tabs = sidebar.querySelector<HTMLElement>(".side-tabs");
-    if (tabs && !tabs.querySelector(".side-close")) {
+    let head = sidebar.querySelector<HTMLElement>(".side-detail-head");
+    if (!head) {
+      head = document.createElement("div");
+      head.className = "side-detail-head";
+      head.innerHTML = '<span class="side-detail-title"></span><span class="spacer"></span>';
+      if (tabs) sidebar.insertBefore(head, tabs);
+      else sidebar.insertBefore(head, sidebar.firstChild);
+    }
+    tabs?.querySelector(".side-close")?.remove();
+    if (!head.querySelector(".side-close")) {
       const close = document.createElement("button");
       close.type = "button";
       close.className = "pane-btn side-close";
@@ -215,7 +243,7 @@ function installMonitorSidebarControls(): void {
         monitorSideCollapsed = true;
         updateMonitorSidebarChrome();
       });
-      tabs.appendChild(close);
+      head.appendChild(close);
     }
     if (!sidebar.querySelector(".buddy-side-reopen")) {
       const reopen = document.createElement("button");
