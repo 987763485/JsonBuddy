@@ -164,6 +164,12 @@ export interface MockEndpoint {
   enabled: boolean;
   response: unknown;
   importedFrom?: string | null;
+  generatedInfo?: {
+    n: number;
+    seed: number;
+    options?: Record<string, boolean>;
+    arrayOnly?: boolean;
+  } | null;
 }
 
 export interface MockProject {

@@ -35,6 +35,10 @@ pub struct MockEndpoint {
     pub response: Value,
     #[serde(default)]
     pub imported_from: Option<String>,
+    /// Generation settings persisted with the endpoint. The generated payload
+    /// itself is recreated at runtime and never written to project files.
+    #[serde(default)]
+    pub generated_info: Option<Value>,
     /// Generated data for the current session. Never written to project files.
     #[serde(skip)]
     pub runtime_response: Option<Value>,
@@ -605,6 +609,7 @@ fn sample_project() -> MockProject {
                     "meta": { "count": 2, "source": "mock" }
                 }),
                 imported_from: None,
+                generated_info: None,
                 runtime_response: None,
             },
             MockEndpoint {
@@ -622,6 +627,7 @@ fn sample_project() -> MockProject {
                     "rating": 9.2
                 }),
                 imported_from: None,
+                generated_info: None,
                 runtime_response: None,
             },
             MockEndpoint {
@@ -637,6 +643,7 @@ fn sample_project() -> MockProject {
                     "title": "New movie"
                 }),
                 imported_from: None,
+                generated_info: None,
                 runtime_response: None,
             },
         ],
@@ -1074,6 +1081,13 @@ mod tests {
             .expect("runtime response");
         project.name = "Movies API updated".to_string();
         project.endpoints[0].imported_from = Some("movies.schema.json".to_string());
+        let generated_info = json!({
+            "n": 10,
+            "seed": 42,
+            "options": { "realistic": true, "unique": true, "vary": true, "nulls": false },
+            "arrayOnly": false
+        });
+        project.endpoints[0].generated_info = Some(generated_info.clone());
         state.save_project(project).expect("save project");
 
         let live = state.projects().remove(0);
@@ -1083,6 +1097,7 @@ mod tests {
             .find(|endpoint| endpoint.id == endpoint_id)
             .expect("endpoint");
         assert!(endpoint.runtime_response.is_some());
+        assert_eq!(endpoint.generated_info, Some(generated_info.clone()));
 
         let stored = load_projects(&paths.mock_projects).expect("load projects");
         let stored_endpoint = stored[0]
@@ -1091,6 +1106,7 @@ mod tests {
             .find(|endpoint| endpoint.id == endpoint_id)
             .expect("stored endpoint");
         assert!(stored_endpoint.runtime_response.is_none());
+        assert_eq!(stored_endpoint.generated_info, Some(generated_info));
         assert_eq!(
             stored_endpoint.imported_from.as_deref(),
             Some("movies.schema.json")

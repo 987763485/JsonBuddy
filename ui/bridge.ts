@@ -5148,16 +5148,31 @@ function patchImportExport(): void {
 
   w.downloadMockExport = async () => {
     const file = document.getElementById("mockExportFile")?.textContent ?? "export.json";
-    const text = document.getElementById("mockExportCode")?.textContent ?? "";
+    const openapi =
+      document.querySelector(".mock-format.on")?.getAttribute("data-mock-format") ===
+      "openapi";
+    let text = document.getElementById("mockExportCode")?.textContent ?? "";
     if (!text) return;
     try {
-      const saved = await nativeSaveText(file, text, [
-        {
-          name: file.endsWith(".yaml") ? "OpenAPI YAML" : "JSON Schema",
-          extensions: [file.split(".").pop() ?? "json"]
-        }
-      ]);
-      if (saved) w.closeMockExport?.();
+      const path = await save({
+        defaultPath: file,
+        filters: openapi
+          ? [
+              { name: "OpenAPI YAML", extensions: ["yaml", "yml"] },
+              { name: "OpenAPI JSON", extensions: ["json"] }
+            ]
+          : [{ name: "JSON Schema", extensions: ["json"] }]
+      });
+      if (typeof path !== "string") return;
+      if (openapi && /\.json$/i.test(path) && buddyMockOpenApiDoc) {
+        const pretty =
+          document.getElementById("mockExportPretty")?.classList.contains("on") ??
+          true;
+        text = JSON.stringify(buddyMockOpenApiDoc, null, pretty ? 2 : 0);
+      }
+      await invoke("save_text_file", { path, text });
+      toast(w.t("Export"), path);
+      w.closeMockExport?.();
     } catch (error) {
       toast("Could not export mock API", String(error));
     }
@@ -5273,7 +5288,9 @@ function patchMockGeneration(): void {
     shape.ep.generated = JSON.stringify(payload, null, 2);
     shape.ep.generatedInfo = {
       n: shape.rootArray || shape.arrayKey ? count : 1,
-      seed
+      seed,
+      options: w.mockGenOptions?.(),
+      arrayOnly
     };
     setMockRuntimeResponse(shape.ep, payload);
     evalGlobal("activeMockTab = 'response'");
@@ -5566,7 +5583,7 @@ interface BridgeMockEndpoint {
   enabled: boolean;
   response: string;
   generated?: string;
-  generatedInfo?: { n: number; seed: number };
+  generatedInfo?: MockEndpoint["generatedInfo"];
   importedFrom?: string;
 }
 
@@ -5596,6 +5613,8 @@ let mockEditorHost: HTMLDivElement | null = null;
 let syncingMockEditor = false;
 let mockBridgeReady = false;
 let mockSeeded = false;
+let mockRuntimeReady = new Set<string>();
+let buddyMockOpenApiDoc: unknown = null;
 
 const mockEditorTheme = EditorView.theme({
   "&": {
@@ -5729,7 +5748,8 @@ function mockEndpointToBridge(endpoint: MockEndpoint): BridgeMockEndpoint {
     delayMs: endpoint.delayMs ?? 0,
     enabled: endpoint.enabled !== false,
     response: mockResponseText(endpoint.response),
-    importedFrom: endpoint.importedFrom ?? undefined
+    importedFrom: endpoint.importedFrom ?? undefined,
+    generatedInfo: endpoint.generatedInfo ?? undefined
   };
 }
 
@@ -5783,7 +5803,8 @@ function mockProjectToBackend(project: BridgeMockProject): MockProject {
         delayMs: Number(endpoint.delayMs) || 0,
         enabled: endpoint.enabled !== false,
         response: mockParseResponse(endpoint),
-        importedFrom: endpoint.importedFrom
+        importedFrom: endpoint.importedFrom,
+        generatedInfo: endpoint.generatedInfo
       };
     })
   };
@@ -5807,9 +5828,113 @@ function setMockRuntimeResponse(
     projectId: project.id,
     endpointId: endpoint.id,
     response
-  }).catch((error) => {
-    toast("Could not update mock response", String(error));
-  });
+  })
+    .then(() => {
+      if (response == null) mockRuntimeReady.delete(endpoint.id);
+      else mockRuntimeReady.add(endpoint.id);
+    })
+    .catch((error) => {
+      mockRuntimeReady.delete(endpoint.id);
+      toast("Could not update mock response", String(error));
+    });
+}
+
+interface MockGeneratedShape {
+  ep: BridgeMockEndpoint;
+  value: unknown;
+  rootArray: boolean;
+  arrayKey: string | null;
+  template: unknown;
+}
+
+function mockGeneratedShapeForEndpoint(
+  endpoint: BridgeMockEndpoint
+): MockGeneratedShape {
+  let value: unknown = null;
+  try {
+    value = JSON.parse(endpoint.response || "null");
+  } catch {
+    value = null;
+  }
+  let rootArray = false;
+  let arrayKey: string | null = null;
+  let template: unknown = null;
+  if (Array.isArray(value)) {
+    rootArray = true;
+    template = value[0];
+  } else if (value && typeof value === "object") {
+    const key = Object.keys(value).find((name) =>
+      Array.isArray((value as Record<string, unknown>)[name])
+    );
+    if (key) {
+      arrayKey = key;
+      const candidate = (value as Record<string, unknown>)[key];
+      template = Array.isArray(candidate) ? candidate[0] : null;
+    } else {
+      template = value;
+    }
+  }
+  return { ep: endpoint, value, rootArray, arrayKey, template };
+}
+
+function mockGeneratedPayloadForEndpoint(
+  endpoint: BridgeMockEndpoint
+): unknown {
+  const info = endpoint.generatedInfo;
+  if (!info) return undefined;
+  const count = Math.max(1, Math.min(1000, Number(info.n) || 1));
+  const seed = Math.max(1, Math.floor(Number(info.seed) || 42));
+  const options = {
+    realistic: info.options?.realistic !== false,
+    unique: info.options?.unique !== false,
+    vary: info.options?.vary !== false,
+    nulls: info.options?.nulls === true
+  };
+  const payload = w.mockGeneratedPayload?.(
+    mockGeneratedShapeForEndpoint(endpoint),
+    count,
+    seed,
+    options,
+    info.arrayOnly === true
+  );
+  return payload == null ? undefined : payload;
+}
+
+async function regenerateProjectGenerated(
+  project: BridgeMockProject
+): Promise<void> {
+  let changed = false;
+  for (const endpoint of project.endpoints) {
+    if (!endpoint.generatedInfo || mockRuntimeReady.has(endpoint.id)) continue;
+    const payload = mockGeneratedPayloadForEndpoint(endpoint);
+    if (payload === undefined) continue;
+    endpoint.generated = JSON.stringify(payload, null, 2);
+    try {
+      await invoke("set_mock_runtime_response", {
+        projectId: project.id,
+        endpointId: endpoint.id,
+        response: payload
+      });
+      mockRuntimeReady.add(endpoint.id);
+      changed = true;
+    } catch (error) {
+      console.warn("could not regenerate mock data", error);
+    }
+  }
+  if (changed) {
+    try {
+      if (
+        evalGlobal<string | null>("activeMockProjectId") === project.id &&
+        mockPage() === "detail"
+      ) {
+        w.renderMockEndpoint?.(
+          evalGlobal<number>("activeMockEndpointIndex") || 0
+        );
+      }
+    } catch {
+      // The mock page may be closed.
+    }
+  }
 }
 
 function mockAppIsMockView(): boolean {
@@ -5973,6 +6098,12 @@ async function setMockProjectRunning(
 ): Promise<void> {
   let status: MockServerStatus;
   try {
+    if (running) {
+      const project = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS").find(
+        (item) => item.id === projectId
+      );
+      if (project) await regenerateProjectGenerated(project);
+    }
     status = await invoke<MockServerStatus>("set_mock_project_running", {
       projectId,
       running
@@ -6111,7 +6242,10 @@ function ensureMockEditor(): EditorView | null {
             endpoint.response = text;
             endpoint.generated = undefined;
             endpoint.generatedInfo = undefined;
-            if (hadGenerated) setMockRuntimeResponse(endpoint, null);
+            if (hadGenerated) {
+              mockRuntimeReady.delete(endpoint.id);
+              setMockRuntimeResponse(endpoint, null);
+            }
             evalGlobal(`mockCurrentCode = ${JSON.stringify(text)}`);
             w.setText("mockLineCount", update.state.doc.lines);
             w.setText(
@@ -7078,6 +7212,7 @@ function patchMockFlow(): void {
   const originalImportSchema = w.importSchema;
   const originalCreateMockEndpoint = w.createMockEndpoint;
   const originalMockSchemaExportText = w.mockSchemaExportText;
+  const originalMockOpenapiExportText = w.mockOpenapiExportText;
   const originalOpenMockProject = w.openMockProject;
   const originalOpenMockProjects = w.openMockProjects;
 
@@ -7106,6 +7241,10 @@ function patchMockFlow(): void {
   w.openMockProject = (id: string) => {
     if (mockSeeded) void flushMockSave();
     originalOpenMockProject(id);
+    const project = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS").find(
+      (item) => item.id === id
+    );
+    if (project) void regenerateProjectGenerated(project);
   };
 
   w.openMockProjects = () => {
@@ -7242,6 +7381,47 @@ function patchMockFlow(): void {
         toast("Could not delete mock project", String(error));
       }
     }
+  };
+
+  w.mockOpenapiExportText = (
+    project: BridgeMockProject,
+    endpoints: BridgeMockEndpoint[],
+    includeExamples: boolean
+  ) => {
+    const paths: Record<string, Record<string, unknown>> = {};
+    endpoints.forEach((endpoint) => {
+      const path = endpoint.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+      const method = endpoint.method.toLowerCase();
+      const response: Record<string, unknown> = {
+        description: endpoint.statusText || "OK"
+      };
+      if (endpoint.status !== 204) {
+        const media: Record<string, unknown> = {
+          schema: w.mockInferSchema?.(w.mockEndpointValue?.(endpoint)) ?? {}
+        };
+        if (includeExamples) {
+          media.examples = {
+            default: { value: w.mockEndpointValue?.(endpoint) }
+          };
+        }
+        response.content = { "application/json": media };
+      }
+      if (!paths[path]) paths[path] = {};
+      paths[path][method] = {
+        summary: endpoint.name,
+        responses: { [String(endpoint.status)]: response }
+      };
+    });
+    buddyMockOpenApiDoc = {
+      openapi: "3.1.0",
+      info: { title: project.name, version: "1.0.0" },
+      servers: [{ url: w.mockBaseUrl(project) }],
+      paths
+    };
+    if (typeof originalMockOpenapiExportText === "function") {
+      return originalMockOpenapiExportText(project, endpoints, includeExamples);
+    }
+    return JSON.stringify(buddyMockOpenApiDoc, null, 2);
   };
 
   w.mockSchemaExportText = (
