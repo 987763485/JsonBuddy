@@ -10,6 +10,7 @@ import { tags } from "@lezer/highlight";
 import { basicSetup, EditorView } from "codemirror";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText as writeClipboard } from "@tauri-apps/plugin-clipboard-manager";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
@@ -807,6 +808,37 @@ function scheduleJsonStatusValidation(state: EditorState): void {
   }, 300);
 }
 
+function updateStatusIndentation(text: string): void {
+  const items = document.querySelectorAll<HTMLElement>(
+    ".status-normal .status-right .status-item"
+  );
+  const item = items[4];
+  if (!item) return;
+  const firstIndented = text.split(/\r?\n/).find((line) => /^[ \t]+\S/.test(line));
+  const zh = viewLanguageIsZh();
+  if (firstIndented?.startsWith("\t")) {
+    item.textContent = zh ? "制表符" : "Tabs";
+    return;
+  }
+  const width = firstIndented ? (/^ +/.exec(firstIndented)?.[0].length ?? 2) : 2;
+  item.textContent = zh ? `空格: ${width}` : `Spaces: ${width}`;
+}
+
+function updateStatusZoom(): void {
+  const items = document.querySelectorAll<HTMLElement>(
+    ".status-normal .status-right .status-item"
+  );
+  const item = items[5];
+  if (!item) return;
+  const label =
+    document.getElementById("graphZoomLabel")?.textContent?.trim() || "100%";
+  const textNode = [...item.childNodes].find(
+    (node) => node.nodeType === Node.TEXT_NODE
+  );
+  if (textNode) textNode.nodeValue = label;
+  else item.append(document.createTextNode(label));
+}
+
 function updateJsonEditorStatus(state: EditorState, validate: boolean): void {
   const cursor = document.getElementById("statusCursor");
   if (!cursor) return;
@@ -820,6 +852,7 @@ function updateJsonEditorStatus(state: EditorState, validate: boolean): void {
       : `Ln ${line.number}, Col ${column}`;
   const segments = jsonPathAtCursor(state);
   renderJsonStatusPath(segments, jsonPathText(segments));
+  updateStatusIndentation(state.doc.toString());
   if (validate) scheduleJsonStatusValidation(state);
 }
 
@@ -1141,6 +1174,8 @@ let buddyStreamEvents: StreamEvent[] = [];
 let buddyStreamFollowing: string | null = null;
 let buddyStreamRateSamples: { at: number; count: number }[] = [];
 let buddyStreamLastEventAt: number | null = null;
+let buddyOpenStreamPath: ((path: string) => Promise<void>) | null = null;
+let fileDropInstalled = false;
 const STREAM_RATE_WINDOW_MS = 5000;
 
 function resetStreamRate(): void {
@@ -2917,9 +2952,45 @@ function installTreeView(): void {
    Data-driven table view
    ------------------------------------------------------------ */
 
-const tableMeta = { sections: 0, rows: 0 };
+const tableMeta = { sections: 0, rows: 0, visibleRows: 0, visibleSections: 0 };
+const TABLE_VIRTUAL_THRESHOLD = 200;
+const TABLE_ROW_HEIGHT = 34;
+const TABLE_VIRTUAL_OVERSCAN = 8;
 let tableInstalled = false;
 let tableRenderTimer: number | null = null;
+let tableFilterQuery = "";
+let tableParsedSource: string | null = null;
+let tableParsedValue: unknown;
+let virtualIdCounter = 0;
+let pendingVirtualTables: PendingVirtualTable[] = [];
+let virtualTableSections: VirtualTableSection[] = [];
+let virtualTableFrame: number | null = null;
+let virtualScrollBound = false;
+
+interface PendingVirtualTable {
+  id: string;
+  rowCount: number;
+  colspan: number;
+  renderRow: (position: number) => string;
+}
+
+interface VirtualTableSection {
+  head: HTMLElement;
+  table: HTMLTableElement;
+  tbody: HTMLTableSectionElement;
+  rowCount: number;
+  colspan: number;
+  renderRow: (position: number) => string;
+  start: number;
+  end: number;
+}
+
+interface TableSectionResult {
+  html: string;
+  totalRows: number;
+  visibleRows: number;
+  virtual?: PendingVirtualTable;
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -2977,11 +3048,47 @@ function tableCellHtml(value: unknown, path: string): string {
   return `<td class="${className} cell" data-path="${w.escHtml(path)}" data-type="${type}" data-val="${dataValue}" onclick="selectCell(this)">${content}</td>`;
 }
 
+function tableSearchText(value: unknown): string {
+  try {
+    return (JSON.stringify(value) ?? String(value)).toLowerCase();
+  } catch {
+    return String(value).toLowerCase();
+  }
+}
+
+function tableRowMatches(text: string): boolean {
+  const query = tableFilterQuery.trim().toLowerCase();
+  return !query || text.toLowerCase().includes(query);
+}
+
+function arrayRowHtml(
+  item: unknown,
+  index: number,
+  path: string,
+  objectMode: boolean,
+  columns: string[]
+): string {
+  const indexPath = `${path}[${index}]`;
+  let body = `<td class="idx">${index}</td>`;
+  if (objectMode) {
+    for (const column of columns) {
+      body += tableCellHtml(
+        isPlainObject(item) ? item[column] : undefined,
+        treePathFor(indexPath, column, false)
+      );
+    }
+  } else {
+    body += tableCellHtml(item, indexPath);
+    body += `<td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>`;
+  }
+  return `<tr>${body}</tr>`;
+}
+
 function renderArraySection(
   key: string,
   list: unknown[],
   path: string
-): { html: string; rows: number } {
+): TableSectionResult {
   const objects = list.filter(isPlainObject);
   const objectMode = objects.length > 0;
   const columns: string[] = [];
@@ -2994,21 +3101,28 @@ function renderArraySection(
       if (columns.length >= 24) break;
     }
   }
-  const rows = list.slice(0, 500);
+  const matchingIndexes: number[] = [];
+  list.forEach((item, index) => {
+    if (tableRowMatches(tableSearchText(item))) matchingIndexes.push(index);
+  });
+  const visibleRows = matchingIndexes.length;
+  if (tableFilterQuery.trim() && !visibleRows) {
+    return { html: "", totalRows: list.length, visibleRows: 0 };
+  }
   const colCount = objectMode ? columns.length : 2;
   const dataWidth = colCount ? (94 / colCount).toFixed(2) : "94";
   let cols = `<col style="width:6%" />`;
   for (let index = 0; index < colCount; index += 1) {
     cols += `<col style="width:${dataWidth}%" />`;
   }
+  const numericSample = objects.slice(0, 120);
   let head = "";
   if (objectMode) {
     head = "<th>#</th>";
     for (const column of columns) {
       const numeric =
-        rows.length > 0 &&
-        rows.every((item) => {
-          if (!isPlainObject(item)) return false;
+        numericSample.length > 0 &&
+        numericSample.every((item) => {
           const value = item[column];
           return value === undefined || typeof value === "number";
         });
@@ -3017,44 +3131,64 @@ function renderArraySection(
   } else {
     head = "<th>#</th><th>value</th><th>type</th>";
   }
+  const colspan = objectMode ? colCount + 1 : 3;
   let body = "";
-  rows.forEach((item, index) => {
-    const indexPath = `${path}[${index}]`;
-    body += "<tr>";
-    body += `<td class="idx">${index}</td>`;
-    if (objectMode) {
-      for (const column of columns) {
-        body += tableCellHtml(
-          isPlainObject(item) ? item[column] : undefined,
-          treePathFor(indexPath, column, false)
-        );
-      }
-    } else {
-      body += tableCellHtml(item, indexPath);
-      body += `<td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>`;
+  let virtual: PendingVirtualTable | undefined;
+  if (!visibleRows) {
+    body = `<tr><td class="v-muted" colspan="${colspan}">${
+      viewLanguageIsZh() ? "无行" : "No rows"
+    }</td></tr>`;
+  } else if (visibleRows <= TABLE_VIRTUAL_THRESHOLD) {
+    for (const index of matchingIndexes) {
+      body += arrayRowHtml(list[index], index, path, objectMode, columns);
     }
-    body += "</tr>";
-  });
-  if (!rows.length) {
-    body = `<tr><td class="v-muted" colspan="${
-      objectMode ? colCount + 1 : 3
-    }">${viewLanguageIsZh() ? "无行" : "No rows"}</td></tr>`;
+  } else {
+    virtual = {
+      id: `virtual-${(virtualIdCounter += 1)}`,
+      rowCount: visibleRows,
+      colspan,
+      renderRow: (position) => {
+        const index = matchingIndexes[position];
+        return arrayRowHtml(list[index], index, path, objectMode, columns);
+      }
+    };
+    pendingVirtualTables.push(virtual);
   }
   const notes: string[] = [];
-  if (objectMode && columns.length >= 24) notes.push(viewLanguageIsZh() ? "前 24 列" : "first 24 columns");
-  if (list.length > 500) notes.push(viewLanguageIsZh() ? "前 500 行" : "first 500 rows");
+  if (objectMode && columns.length >= 24) {
+    notes.push(viewLanguageIsZh() ? "前 24 列" : "first 24 columns");
+  }
   const extra = notes.length ? ` · ${notes.join(" · ")}` : "";
+  const count =
+    tableFilterQuery.trim() && visibleRows !== list.length
+      ? `${visibleRows} / ${list.length} items`
+      : `${list.length} items`;
   return {
-    rows: rows.length,
+    totalRows: list.length,
+    visibleRows,
     html: `<div class="section-head">
       <svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-3)"><use href="#i-chev-down"/></svg>
       <span class="sec-key">${w.escHtml(key)}</span>
       <span class="sec-type">array</span>
-      <span class="sec-count">${list.length} items${extra}</span>
+      <span class="sec-count">${count}${extra}</span>
       <span class="sec-path">${w.escHtml(path)}</span>
     </div>
-    <table class="dt"><colgroup>${cols}</colgroup><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+    <table class="dt"${
+      virtual ? ` data-virtual-id="${virtual.id}"` : ""
+    }><colgroup>${cols}</colgroup><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
   };
+}
+
+function objectRowHtml(
+  name: string,
+  item: unknown,
+  path: string
+): string {
+  return `<tr>
+      <td class="v-key">${w.escHtml(name)}</td>
+      ${tableCellHtml(item, treePathFor(path, name, false))}
+      <td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>
+    </tr>`;
 }
 
 function renderObjectSection(
@@ -3062,30 +3196,54 @@ function renderObjectSection(
   value: Record<string, unknown>,
   path: string,
   title = key
-): { html: string; rows: number } {
-  const entries = Object.entries(value).slice(0, 300);
+): TableSectionResult {
+  const allEntries = Object.entries(value);
+  const entries = allEntries.filter(([name, item]) =>
+    tableRowMatches(`${name} ${tableSearchText(item)}`)
+  );
+  const visibleRows = entries.length;
+  if (tableFilterQuery.trim() && !visibleRows) {
+    return { html: "", totalRows: allEntries.length, visibleRows: 0 };
+  }
   let body = "";
-  for (const [name, item] of entries) {
-    const childPath = treePathFor(path, name, false);
-    body += `<tr>
-      <td class="v-key">${w.escHtml(name)}</td>
-      ${tableCellHtml(item, childPath)}
-      <td class="v-muted">${w.escHtml(treeTypeOf(item))}</td>
-    </tr>`;
+  let virtual: PendingVirtualTable | undefined;
+  if (!visibleRows) {
+    body = `<tr><td class="v-muted" colspan="3">${
+      viewLanguageIsZh() ? "空对象" : "Empty object"
+    }</td></tr>`;
+  } else if (visibleRows <= TABLE_VIRTUAL_THRESHOLD) {
+    for (const [name, item] of entries) {
+      body += objectRowHtml(name, item, path);
+    }
+  } else {
+    virtual = {
+      id: `virtual-${(virtualIdCounter += 1)}`,
+      rowCount: visibleRows,
+      colspan: 3,
+      renderRow: (position) => {
+        const [name, item] = entries[position];
+        return objectRowHtml(name, item, path);
+      }
+    };
+    pendingVirtualTables.push(virtual);
   }
-  if (!entries.length) {
-    body = `<tr><td class="v-muted" colspan="3">${viewLanguageIsZh() ? "空对象" : "Empty object"}</td></tr>`;
-  }
+  const count =
+    tableFilterQuery.trim() && visibleRows !== allEntries.length
+      ? `${visibleRows} / ${allEntries.length} keys`
+      : `${allEntries.length} keys`;
   return {
-    rows: entries.length,
+    totalRows: allEntries.length,
+    visibleRows,
     html: `<div class="section-head">
       <svg class="i xs" viewBox="0 0 24 24" style="color:var(--ink-3)"><use href="#i-chev-down"/></svg>
       <span class="sec-key">${w.escHtml(title)}</span>
       <span class="sec-type">object</span>
-      <span class="sec-count">${Object.keys(value).length} keys</span>
+      <span class="sec-count">${count}</span>
       <span class="sec-path">${w.escHtml(path)}</span>
     </div>
-    <table class="dt">
+    <table class="dt"${
+      virtual ? ` data-virtual-id="${virtual.id}"` : ""
+    }>
       <colgroup><col style="width:24%" /><col style="width:56%" /><col style="width:20%" /></colgroup>
       <thead><tr><th>key</th><th>value</th><th>type</th></tr></thead>
       <tbody>${body}</tbody>
@@ -3093,9 +3251,119 @@ function renderObjectSection(
   };
 }
 
+function resetTableMeta(): void {
+  tableMeta.sections = 0;
+  tableMeta.rows = 0;
+  tableMeta.visibleRows = 0;
+  tableMeta.visibleSections = 0;
+  virtualTableSections = [];
+  pendingVirtualTables = [];
+}
+
+function hydrateVirtualTables(sheet: Element): void {
+  virtualTableSections = [];
+  for (const pending of pendingVirtualTables) {
+    const table = sheet.querySelector<HTMLTableElement>(
+      `table[data-virtual-id="${pending.id}"]`
+    );
+    const tbody = table?.tBodies[0];
+    if (!table || !tbody) continue;
+    const previous = table.previousElementSibling;
+    virtualTableSections.push({
+      head: previous instanceof HTMLElement ? previous : table,
+      table,
+      tbody,
+      rowCount: pending.rowCount,
+      colspan: pending.colspan,
+      renderRow: pending.renderRow,
+      start: -1,
+      end: -1
+    });
+  }
+}
+
+function virtualSpacer(height: number, colspan: number): string {
+  if (height <= 0) return "";
+  return `<tr class="virtual-spacer" aria-hidden="true"><td colspan="${colspan}" style="height:${height}px;padding:0;border:0;line-height:0;font-size:0"></td></tr>`;
+}
+
+function updateVirtualTableWindows(force = false): void {
+  if (!virtualTableSections.length) return;
+  const scroll = document.querySelector<HTMLElement>(".table-view .table-scroll");
+  if (!scroll || scroll.clientHeight <= 0) return;
+  const scrollRect = scroll.getBoundingClientRect();
+  const scrollTop = scroll.scrollTop;
+  const viewportTop = scrollTop;
+  const viewportBottom = scrollTop + scroll.clientHeight;
+  for (const model of virtualTableSections) {
+    if (!model.table.isConnected) continue;
+    const tableTop =
+      model.table.getBoundingClientRect().top - scrollRect.top + scrollTop;
+    const bodyTop = tableTop + (model.table.tHead?.offsetHeight ?? 29);
+    let start =
+      Math.floor((viewportTop - bodyTop) / TABLE_ROW_HEIGHT) -
+      TABLE_VIRTUAL_OVERSCAN;
+    let end =
+      Math.ceil((viewportBottom - bodyTop) / TABLE_ROW_HEIGHT) +
+      TABLE_VIRTUAL_OVERSCAN;
+    start = Math.max(0, Math.min(model.rowCount, start));
+    end = Math.max(start, Math.min(model.rowCount, end));
+    if (!force && start === model.start && end === model.end) continue;
+    model.start = start;
+    model.end = end;
+    const topHeight = start * TABLE_ROW_HEIGHT;
+    const bottomHeight = (model.rowCount - end) * TABLE_ROW_HEIGHT;
+    let html = virtualSpacer(topHeight, model.colspan);
+    for (let position = start; position < end; position += 1) {
+      html += model.renderRow(position);
+    }
+    html += virtualSpacer(bottomHeight, model.colspan);
+    model.tbody.innerHTML = html;
+  }
+}
+
+function scheduleVirtualTableUpdate(): void {
+  if (virtualTableFrame !== null) return;
+  virtualTableFrame = window.requestAnimationFrame(() => {
+    virtualTableFrame = null;
+    updateVirtualTableWindows();
+  });
+}
+
+function bindVirtualTableScroll(): void {
+  if (virtualScrollBound) return;
+  const scroll = document.querySelector<HTMLElement>(".table-view .table-scroll");
+  if (!scroll) return;
+  virtualScrollBound = true;
+  scroll.addEventListener("scroll", scheduleVirtualTableUpdate, { passive: true });
+  window.addEventListener("resize", scheduleVirtualTableUpdate, { passive: true });
+}
+
+function updateTableCount(query: string): void {
+  const countEl = document.getElementById("tableCount");
+  if (!countEl) return;
+  if (!query.trim()) {
+    countEl.textContent = viewLanguageIsZh()
+      ? `${tableMeta.sections} 个区块 · ${tableMeta.rows} 行`
+      : `${tableMeta.sections} section${
+          tableMeta.sections === 1 ? "" : "s"
+        } · ${tableMeta.rows} row${tableMeta.rows === 1 ? "" : "s"}`;
+    return;
+  }
+  countEl.textContent = viewLanguageIsZh()
+    ? `${tableMeta.visibleRows} 行 · ${tableMeta.visibleSections} 个区块`
+    : `${tableMeta.visibleRows} row${
+        tableMeta.visibleRows === 1 ? "" : "s"
+      } · ${tableMeta.visibleSections} section${
+        tableMeta.visibleSections === 1 ? "" : "s"
+      }`;
+}
+
 function renderTableData(): void {
   const sheet = document.querySelector(".table-view .table-sheet");
   if (!sheet) return;
+  const filterEl = document.getElementById("tableRowFilter") as HTMLInputElement | null;
+  if (filterEl) tableFilterQuery = filterEl.value;
   const doc = currentDoc();
   const source = doc?.text ?? "";
   const countEl = document.getElementById("tableCount");
@@ -3104,33 +3372,42 @@ function renderTableData(): void {
     <span class="insp-type" id="inspType">object</span>
     <span class="insp-val" id="inspVal">—</span>
     <span class="spacer"></span>
-    <button class="insp-btn" onclick="copyInspectorPath()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-copy"/></svg>Copy path</button>
-    <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>Reveal in source</button>
+    <button class="insp-btn" onclick="copyInspectorPath()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-copy"/></svg>${viewLanguageIsZh() ? "复制路径" : "Copy path"}</button>
+    <button class="insp-btn" onclick="revealInspectorInSource()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>${viewLanguageIsZh() ? "在源码中显示" : "Reveal in source"}</button>
   </div>`;
+  resetTableMeta();
   if (!source.trim()) {
     sheet.innerHTML = `<div class="tree-empty">${viewLanguageIsZh() ? "打开 JSON 文档以查看表格。" : "Open a JSON document to inspect its tables."}</div>${inspector}`;
-    tableMeta.sections = 0;
-    tableMeta.rows = 0;
     if (countEl) countEl.textContent = viewLanguageIsZh() ? "无文档" : "No document";
     return;
   }
   let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch {
-    sheet.innerHTML = `<div class="tree-empty">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看表格。" : "The document is not valid JSON. Fix the syntax to inspect its tables."}</div>${inspector}`;
-    tableMeta.sections = 0;
-    tableMeta.rows = 0;
-    if (countEl) countEl.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
-    return;
+  if (tableParsedSource === source) {
+    value = tableParsedValue;
+  } else {
+    try {
+      value = JSON.parse(source);
+      tableParsedSource = source;
+      tableParsedValue = value;
+    } catch {
+      tableParsedSource = null;
+      sheet.innerHTML = `<div class="tree-empty">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看表格。" : "The document is not valid JSON. Fix the syntax to inspect its tables."}</div>${inspector}`;
+      if (countEl) countEl.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
+      return;
+    }
   }
+  const scroll = document.querySelector<HTMLElement>(".table-view .table-scroll");
+  const previousScrollTop = scroll?.scrollTop ?? 0;
   const parts: string[] = [];
   let sections = 0;
   let rows = 0;
-  const push = (result: { html: string; rows: number }) => {
+  let visibleRows = 0;
+  const push = (result: TableSectionResult) => {
+    if (!result.html) return;
     parts.push(result.html);
     sections += 1;
-    rows += result.rows;
+    rows += result.totalRows;
+    visibleRows += result.visibleRows;
   };
   if (Array.isArray(value)) {
     push(renderArraySection("$", value, "$"));
@@ -3151,14 +3428,7 @@ function renderTableData(): void {
       push(renderObjectSection("$", scalars, "$", "root"));
     }
   } else {
-    push(
-      renderObjectSection(
-        "$",
-        { value },
-        "$",
-        "root"
-      )
-    );
+    push(renderObjectSection("$", { value }, "$", "root"));
   }
   sheet.innerHTML = parts.join("") + inspector;
   try {
@@ -3168,47 +3438,13 @@ function renderTableData(): void {
   }
   tableMeta.sections = sections;
   tableMeta.rows = rows;
-  try {
-    const filter = document.getElementById("tableRowFilter") as HTMLInputElement | null;
-    w.filterTableRows?.(filter?.value ?? "");
-  } catch {
-    // The table filter is optional.
-  }
-  if (!document.getElementById("tableRowFilter")) {
-    if (countEl) {
-      countEl.textContent = viewLanguageIsZh()
-        ? `${sections} 个区块 · ${rows} 行`
-        : `${sections} section${sections === 1 ? "" : "s"} · ${rows} row${
-            rows === 1 ? "" : "s"
-          }`;
-    }
-  }
-}
-
-function updateTableCount(query: string): void {
-  const countEl = document.getElementById("tableCount");
-  if (!countEl) return;
-  if (!query.trim()) {
-    countEl.textContent = viewLanguageIsZh()
-      ? `${tableMeta.sections} 个区块 · ${tableMeta.rows} 行`
-      : `${tableMeta.sections} section${
-          tableMeta.sections === 1 ? "" : "s"
-        } · ${tableMeta.rows} row${tableMeta.rows === 1 ? "" : "s"}`;
-    return;
-  }
-  const sheet = document.querySelector(".table-view .table-sheet");
-  if (!sheet) return;
-  const visibleSections = [...sheet.querySelectorAll<HTMLElement>("table.dt")].filter(
-    (table) => !table.hidden
-  ).length;
-  const visibleRows = [...sheet.querySelectorAll<HTMLElement>("table.dt tbody tr")].filter(
-    (row) => !row.hidden
-  ).length;
-  countEl.textContent = viewLanguageIsZh()
-    ? `${visibleRows} 行 · ${visibleSections} 个区块`
-    : `${visibleRows} row${visibleRows === 1 ? "" : "s"} · ${visibleSections} section${
-        visibleSections === 1 ? "" : "s"
-      }`;
+  tableMeta.visibleRows = visibleRows;
+  tableMeta.visibleSections = sections;
+  hydrateVirtualTables(sheet);
+  bindVirtualTableScroll();
+  if (scroll) scroll.scrollTop = previousScrollTop;
+  updateVirtualTableWindows(true);
+  updateTableCount(tableFilterQuery);
 }
 
 function scheduleTableRender(delay = 160): void {
@@ -3224,6 +3460,21 @@ function scheduleTableRender(delay = 160): void {
   }, delay);
 }
 
+let statusChromeInstalled = false;
+
+function installStatusChrome(): void {
+  if (statusChromeInstalled) return;
+  statusChromeInstalled = true;
+  const originalApplyGraphScale = w.applyGraphScale;
+  if (typeof originalApplyGraphScale === "function") {
+    w.applyGraphScale = (...args: unknown[]) => {
+      originalApplyGraphScale(...args);
+      updateStatusZoom();
+    };
+  }
+  updateStatusZoom();
+}
+
 function installTableData(): void {
   if (tableInstalled) return;
   tableInstalled = true;
@@ -3232,12 +3483,12 @@ function installTableData(): void {
     originalSetView(view);
     if (view === "table") renderTableData();
   };
-  const originalFilter = w.filterTableRows;
   w.filterTableRows = (query: string) => {
-    originalFilter(query);
-    updateTableCount(String(query ?? ""));
+    tableFilterQuery = String(query ?? "");
+    renderTableData();
   };
   renderTableData();
+  bindVirtualTableScroll();
 }
 
 /* ------------------------------------------------------------
@@ -5029,6 +5280,8 @@ function patchStreamFlow(): void {
       renderRealStreamSource(false);
     });
   };
+
+  buddyOpenStreamPath = openStreamPath;
 
   w.openMonitorFile = async (id: string) => {
     const file = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES").find(
@@ -6856,28 +7109,32 @@ function patchMockFlow(): void {
     );
     if (!project || !endpoint) return;
     if (!project.running) {
-      toast("Mock server is stopped", "Start the project to send requests.");
+      toast(
+        w.t("Mock server is stopped"),
+        w.t("Start the project to send requests.")
+      );
       return;
     }
     if (endpoint.enabled === false) {
-      toast("Endpoint is disabled", `${endpoint.method} ${endpoint.path}`);
+      toast(w.t("Endpoint is disabled"), `${endpoint.method} ${endpoint.path}`);
       return;
     }
     try {
       const url =
         w.mockBaseUrl(project) + w.mockSamplePathFor(endpoint, project);
-      const response = await fetch(url, {
-        method: endpoint.method,
-        headers: { Accept: "application/json" }
-      });
+      const result = await invoke<{
+        status: number;
+        statusText: string;
+        durationMs: number;
+      }>("test_local_request", { url, method: endpoint.method });
       toast(
-        "Request sent",
-        `${endpoint.method} ${endpoint.path} · ${response.status} ${
-          response.statusText || endpoint.statusText
-        }`
+        w.t("Request sent"),
+        `${endpoint.method} ${endpoint.path} · ${result.status} ${
+          result.statusText || endpoint.statusText
+        } · ${result.durationMs} ms`
       );
     } catch (error) {
-      toast("Request failed", String(error));
+      toast(viewLanguageIsZh() ? "请求失败" : "Request failed", String(error));
     }
   };
 
@@ -7044,6 +7301,39 @@ function patchMockFlow(): void {
   };
 }
 
+let menuBridgeReady = false;
+
+function startMenuBridge(): void {
+  if (menuBridgeReady || !hasTauri) return;
+  if (typeof (window as any).__TAURI_INTERNALS__?.transformCallback !== "function") {
+    return;
+  }
+  menuBridgeReady = true;
+  void listen<string>("buddy-menu", (event) => {
+    switch (event.payload) {
+      case "menu-new-json":
+        void w.newEditorDocument?.();
+        break;
+      case "menu-open-json":
+        void w.openJsonFileDialog?.();
+        break;
+      case "menu-open-stream":
+        void w.openMonitorFileDialog?.();
+        break;
+      case "menu-save":
+        void w.saveCurrentDocument?.();
+        break;
+      case "menu-settings":
+        w.openSettings?.();
+        break;
+      default:
+        break;
+    }
+  }).catch((error) => {
+    console.warn("could not listen for application menu events", error);
+  });
+}
+
 function startMockEventBridge(): void {
   if (mockBridgeReady) return;
   if (typeof (window as any).__TAURI_INTERNALS__?.transformCallback !== "function") {
@@ -7110,6 +7400,54 @@ function patchJsonDocumentFlow(): void {
     }
   };
 
+  w.buddyOpenDroppedPath = async (paths: string | string[]) => {
+    const list = (Array.isArray(paths) ? paths : [paths]).filter(
+      (path) => typeof path === "string" && path.trim()
+    );
+    const supported = list.filter((path) =>
+      /\.(json|jsonl|zst|zstd)$/i.test(path.trim())
+    );
+    if (!supported.length) {
+      toast(
+        viewLanguageIsZh() ? "不支持的文件类型" : "Unsupported file type",
+        list[0]?.split(/[\\/]/).pop() ?? ""
+      );
+      return;
+    }
+    for (const path of supported) {
+      try {
+        if (/\.(jsonl|zst|zstd)$/i.test(path)) {
+          if (!buddyOpenStreamPath) {
+            throw new Error("stream monitor is unavailable");
+          }
+          await buddyOpenStreamPath(path);
+          toast(
+            w.t("Opened JSONL file"),
+            path.split(/[\\/]/).pop() ?? path
+          );
+        } else {
+          const document = await invoke<JsonDocument>("open_json_document", {
+            path
+          });
+          installDocument(document);
+          toast(w.t("Opened JSON file"), document.name);
+        }
+      } catch (error) {
+        const isStream = /\.(jsonl|zst|zstd)$/i.test(path);
+        toast(
+          isStream
+            ? viewLanguageIsZh()
+              ? "无法打开流"
+              : "Could not open stream"
+            : viewLanguageIsZh()
+              ? "无法打开文档"
+              : "Could not open document",
+          String(error)
+        );
+      }
+    }
+  };
+
   w.saveCurrentDocument = async () => {
     const doc = currentDoc();
     if (!doc) return;
@@ -7162,6 +7500,22 @@ function patchJsonDocumentFlow(): void {
   };
 }
 
+function installGlobalFileDrop(): void {
+  if (fileDropInstalled || !hasTauri) return;
+  if (typeof (window as any).__TAURI_INTERNALS__?.transformCallback !== "function") {
+    return;
+  }
+  fileDropInstalled = true;
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      void w.buddyOpenDroppedPath?.(event.payload.paths);
+    })
+    .catch((error) => {
+      console.warn("could not listen for file drops", error);
+    });
+}
+
 async function bootstrap(): Promise<void> {
   if (!hasTauri) {
     console.warn("JSON Buddy bridge requires the Tauri runtime");
@@ -7173,6 +7527,8 @@ async function bootstrap(): Promise<void> {
     patchSettingsPersistence();
     patchClipboard();
     patchJsonDocumentFlow();
+    installGlobalFileDrop();
+    startMenuBridge();
     patchCompareFlow();
     patchStreamFlow();
     startStreamEventBridge();
@@ -7196,6 +7552,7 @@ async function bootstrap(): Promise<void> {
     patchSearchReveal();
     installTreeView();
     installTableData();
+    installStatusChrome();
     installGraphData();
     installCodegen();
     patchImportExport();
