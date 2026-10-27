@@ -3264,20 +3264,29 @@ trajectoryStyle.textContent = `
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px 9px;
     overflow: hidden;
   }
   .trajectory-toolbar {
     flex: 0 0 37px;
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 0 11px;
-    background: var(--card);
-    border: 1px solid var(--line-strong);
-    border-radius: 9px;
-    box-shadow: var(--shadow-node);
+    gap: 7px;
+    padding: 0 14px;
+    background: var(--chrome);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    user-select: none;
+  }
+  .trajectory-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px 9px;
+    overflow: hidden;
   }
   .trajectory-controls { display: flex; align-items: center; gap: 2px; }
   .trajectory-stat {
@@ -5105,10 +5114,12 @@ function installTrajectoryView(): void {
         <button type="button" class="trajectory-range-badge" id="trajectoryRangeBadge" hidden><span id="trajectoryRangeText">0</span><svg class="i" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
         <span class="trajectory-stat"><b id="trajectoryStepCount">0 steps</b></span>
       </div>
-      <div class="trajectory-timeline" id="trajectoryTimeline" tabindex="0"></div>
-      <div class="trajectory-scroll" id="trajectoryScroll">
-        <div class="trajectory-canvas" id="trajectoryRows"></div>
-        <div class="trajectory-empty" id="trajectoryEmpty">Open a JSONL file to inspect its trajectory.</div>
+      <div class="trajectory-body">
+        <div class="trajectory-timeline" id="trajectoryTimeline" tabindex="0"></div>
+        <div class="trajectory-scroll" id="trajectoryScroll">
+          <div class="trajectory-canvas" id="trajectoryRows"></div>
+          <div class="trajectory-empty" id="trajectoryEmpty">Open a JSONL file to inspect its trajectory.</div>
+        </div>
       </div>
     </section>
     <div class="cmp-splitter trajectory-splitter" id="trajectorySplitter" title="Drag to resize"></div>
