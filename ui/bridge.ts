@@ -708,7 +708,10 @@ function patchDocumentFunctions(): void {
   };
 }
 
+let buddySavedSettings: AppSettings | null = null;
+
 function applyBackendSettings(settings: AppSettings): void {
+  buddySavedSettings = { ...settings };
   evalGlobal(`appSettings = ${JSON.stringify(settings)}`);
   try {
     w.applyTheme(settings.theme);
@@ -721,9 +724,26 @@ function applyBackendSettings(settings: AppSettings): void {
 function patchSettingsPersistence(): void {
   w.persistAppSettings = () => {
     const settings = evalGlobal<AppSettings>("appSettings");
+    const previous = buddySavedSettings;
     void invoke<AppSettings>("update_settings", { settings })
-      .then((saved) => {
+      .then(async (saved) => {
+        buddySavedSettings = { ...saved };
         evalGlobal(`appSettings = ${JSON.stringify(saved)}`);
+        const mockChanged =
+          !!previous &&
+          (previous.mockPort !== saved.mockPort ||
+            previous.mockHttps !== saved.mockHttps);
+        if (!mockChanged || !mockServerRunning) return;
+        try {
+          await invoke("stop_mock_server");
+          const status = await invoke<MockServerStatus>("start_mock_server");
+          mockServerRunning = status.running;
+          applyMockRunningState();
+        } catch (error) {
+          mockServerRunning = false;
+          applyMockRunningState();
+          toast("Could not restart mock server", String(error));
+        }
       })
       .catch((error) => {
         toast("Could not save settings", String(error));
@@ -5219,8 +5239,38 @@ function buddyOpenApiBasePath(doc: Record<string, any>): string {
   if (!raw) return "/";
   if (raw.startsWith("/")) return raw.replace(/\/+$/, "") || "/";
   try {
-    const pathname = new URL(raw, "http://localhost").pathname;
-    return pathname.replace(/\/+$/, "") || "/";
+    const url = new URL(raw, "http://localhost");
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    if (pathname === "/") return "/";
+    const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+      url.hostname
+    );
+    if (!local) return pathname;
+    // A JSON Buddy export points servers.url at the source project mount.
+    // The imported project gets its own mount, so drop that slug instead of
+    // nesting it under the new one.
+    let known: string[] = [];
+    try {
+      known = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS").map(
+        (project) => project.slug
+      );
+    } catch {
+      known = [];
+    }
+    const title =
+      doc.info && typeof doc.info.title === "string" ? doc.info.title : "";
+    const titleSlug =
+      typeof w.normalizeMockSlug === "function"
+        ? w.normalizeMockSlug(title)
+        : title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+    const segment = pathname.split("/").filter(Boolean)[0] || "";
+    if (known.includes(segment) || (titleSlug && segment === titleSlug)) {
+      return "/";
+    }
+    return pathname;
   } catch {
     return "/";
   }
@@ -5768,6 +5818,20 @@ function patchOpenApiImport(): void {
     if (yaml) {
       w.showSchemaError?.(
         `${name} is YAML but is not an OpenAPI / Swagger document.`
+      );
+      return;
+    }
+    const definitions =
+      (root as Record<string, any>).$defs ??
+      (root as Record<string, any>).definitions;
+    if (
+      definitions &&
+      typeof definitions === "object" &&
+      !Array.isArray(definitions) &&
+      Object.keys(definitions).length > 1000
+    ) {
+      w.showSchemaError?.(
+        `This schema has more than 1,000 definitions. Split it into smaller files before importing.`
       );
       return;
     }

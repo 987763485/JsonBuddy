@@ -15,11 +15,14 @@
 - [x] JSON 流对话视图：Rust 语义归一化、会话卡片、模型切换、工具调用与只读状态
 - [x] 流缓冲虚拟列表：固定行高窗口渲染、滚动窗口更新、贴底跟随、脱离时新事件计数与一键回到底部、自动换行回退
 - [x] JSON Mock：项目/端点持久化、响应 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 服务启停
-- [x] Mock 导入：JSON Schema 与 OpenAPI 3.x / Swagger 2.0（JSON、YAML）；保留方法、路径与内联示例响应，支持基础路径、追加/替换，跳过项写入导入报告
+- [x] Mock 导入：JSON Schema 与 OpenAPI 3.x / Swagger 2.0（JSON、YAML）；保留方法、路径与内联示例响应，支持基础路径、追加/替换，跳过项写入导入报告，1,000 定义上限
 - [x] 审计：Rust 策略模块、严格分类、500 条上限、设置持久化、按类别复用确认、真实审计面板
 - [x] 树视图：第六种视图、节点展开/折叠、筛选、路径检查器、复制路径与跳转源码
 - [x] 表格视图：真实 JSON 驱动、数组/对象分节、列选择、行筛选、单元格检查器与源码定位
 - [x] 图形视图：真实 JSON 节点/边、缩放/拖拽/布局切换、迷你地图与空/错误状态
+- [x] 代码生成：TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart、JSON Schema
+- [x] 导入导出：CSV / JSON / JSONL 导入；CSV、Excel、Mock 与生成代码原生保存导出
+- [x] JSON 搜索与生成限制：结果计数与编辑器定位；Mock 生成默认 100 条、上限 1,000 条
 
 ## 我的角色
 

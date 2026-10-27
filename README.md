@@ -10,7 +10,7 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 
 - Tauri 2 应用直接加载锁定原型的 HTML/CSS/DOM；窗口内容铺满 webview，原生交通灯叠放在原型标题栏上
 - 本地数据目录 `~/.json_buddy/` 初始化与旧目录迁移
-- 设置桥接：语言、主题、Mock 端口、HTTPS 开关持久化
+- 设置桥接：语言、主题、Mock 端口、HTTPS 开关持久化；运行中修改端口或 HTTPS 会自动重启 Mock 服务
 - JSON 工具桥接：最近文件、新建、打开、保存、移除
 - JSON 对比桥接：两侧文件读取、最近文件菜单与本地文件选择
 - JSON 流桥接：JSONL / `.jsonl.zstd` 快照、跟随、暂停、删除与实时事件渲染；源代码固定行高虚拟列表、自动换行回退、脱离时新事件计数与一键跟随
@@ -22,7 +22,7 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 - 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema
 - 导入导出：CSV / JSON / JSONL 导入写入本地文档目录；CSV、Excel、Mock 与生成代码通过原生保存对话框导出
 - JSON 搜索：键/值筛选、结果计数与跳转定位到编辑器；Mock 生成默认 100 条、上限 1,000 条
-- JSON Mock 桥接：项目持久化、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入、生成/导出、真实请求日志、HTTP/HTTPS 本地服务启停
+- JSON Mock 桥接：项目持久化、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入（1,000 定义上限）、生成/导出、真实请求日志、HTTP/HTTPS 本地服务启停
 - 在原型编辑器与 Mock 响应区域注入 CodeMirror 6，保持原型的排版与语法色
 - 格式化、压缩、校验仍由原型交互驱动，保存写入真实文件
 - 成功 / 失败 Toast 使用原型现有组件

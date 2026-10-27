@@ -98,7 +98,8 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 - Tauri 集成：`npm run tauri:build -- --debug`
 - 功能模块完成后追加对应单元测试和端到端验证；不修改锁定 UI 文件。
 - 示例 JSONL 文件位于 `example/`，用于流模块测试，不进入 Git。
-- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。
+- Mock 导入覆盖 JSON Schema、OpenAPI JSON/YAML、Swagger 2.0、示例响应提取、跳过报告、1,000 定义上限与追加/替换；YAML 解析由 Rust `serde_yaml` 完成。
+- 运行中的 Mock 服务在共享端口或 HTTPS 设置变化时会停止并按新配置重启；启动失败会回落到停止状态并提示。
 
 ## Git 约定
 
