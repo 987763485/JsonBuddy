@@ -72,6 +72,7 @@ impl AuditConfig {
         self
     }
 
+    #[cfg(test)]
     pub fn enabled(&self, category: &str) -> bool {
         self.categories.get(category).copied().unwrap_or(false)
     }
@@ -127,13 +128,21 @@ impl AuditState {
         Ok(next)
     }
 
-    pub fn acknowledge(&self, id: &str) -> Result<AuditConfig, String> {
+    /// Acknowledges an audit category, or a legacy event id.
+    ///
+    /// The audit panel sends the category so one acknowledgement covers
+    /// later events of the same kind. Existing event-id acknowledgements
+    /// remain readable.
+    pub fn acknowledge(&self, key: &str) -> Result<AuditConfig, String> {
+        if key.trim().is_empty() || key.len() > 128 {
+            return Err("audit acknowledgement key is invalid".to_string());
+        }
         let mut config = self
             .config
             .lock()
             .map_err(|_| "audit state is unavailable".to_string())?;
-        if !config.acknowledged.iter().any(|entry| entry == id) {
-            config.acknowledged.push(id.to_string());
+        if !config.acknowledged.iter().any(|entry| entry == key) {
+            config.acknowledged.push(key.to_string());
             let next = config.clone().normalized();
             write_config(&self.path, &next)?;
             *config = next;

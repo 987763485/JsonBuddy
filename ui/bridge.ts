@@ -1645,7 +1645,8 @@ function auditIcon(category: string): string {
 }
 
 function auditItemHtml(entry: AuditEntry, selected: boolean): string {
-  const acknowledged = buddyAuditAck.has(entry.id);
+  const acknowledged =
+    buddyAuditAck.has(entry.id) || buddyAuditAck.has(entry.category);
   const blocked = entry.blocked;
   const classes = [
     "audit-item",
@@ -1807,14 +1808,26 @@ function patchAuditFlow(): void {
     }
   };
 
-  w.buddyAcknowledgeAudit = async (id: string, button: HTMLElement) => {
+  w.buddyAcknowledgeAudit = async (id: string, _button: HTMLElement) => {
+    const entry = buddyAuditEntries.find((candidate) => candidate.id === id);
+    const key = entry?.category || id;
     try {
-      const config = await invoke<AuditConfig>("acknowledge_audit", { id });
+      const config = await invoke<AuditConfig>("acknowledge_audit", {
+        id: key
+      });
       buddyAuditConfig = config;
       buddyAuditAck = new Set(config.acknowledged);
-      button.closest(".audit-item")?.classList.add("acked");
-      button.textContent = "Acknowledged";
-      (button as HTMLButtonElement).disabled = true;
+      document
+        .querySelectorAll<HTMLElement>("#auditList .audit-item")
+        .forEach((item) => {
+          if (item.dataset.type !== entry?.category) return;
+          item.classList.add("acked");
+          const action = item.querySelector<HTMLButtonElement>(".ai-action.ack");
+          if (action) {
+            action.textContent = "Acknowledged";
+            action.disabled = true;
+          }
+        });
     } catch (error) {
       toast("Could not acknowledge audit event", String(error));
     }
@@ -4428,6 +4441,7 @@ function patchStreamFlow(): void {
     const snapshot = await invoke<StreamSnapshot>("open_stream", { path });
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
+    buddyStreamPending = 0;
     buddyConversation = snapshot.conversation;
     buddyAuditEntries = snapshot.audit ?? [];
     buddyAuditActive = true;
