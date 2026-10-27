@@ -22,7 +22,7 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 - 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema
 - 导入导出：CSV / JSON / JSONL 导入写入本地文档目录；CSV、Excel、Mock 与生成代码通过原生保存对话框导出
 - JSON 搜索：键/值筛选、结果计数与跳转定位到编辑器；Mock 生成默认 100 条、上限 1,000 条；生成参数随项目保存，生成数据只作为运行期响应并在打开或启动项目时重新生成，不写入项目文件
-- JSON Mock 桥接：项目持久化、项目独立启停与路由挂载/卸载（共享本地服务，支持路径参数与查询参数匹配）、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入（远程 `$ref` 拒绝、1,000 定义上限、导入来源随接口持久化）、生成/导出（JSON Schema 使用 `$defs`，OpenAPI 默认 YAML，可在保存对话框选择 `.json` 导出 JSON）、真实请求日志、HTTP/HTTPS 本地服务启停、服务运行时长与总请求数；端点测试请求由 Rust 原生发送，绕过 webview CORS 并接受应用自签名证书，目标严格限制在 localhost
+- JSON Mock 桥接：项目持久化、项目独立启停与路由挂载/卸载（共享本地服务，支持路径参数与查询参数匹配）、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入（远程 `$ref` / `$id` 拒绝、1,000 定义上限、导入来源随接口持久化）、生成/导出（JSON Schema 使用 `$defs`，OpenAPI 默认 YAML，可在保存对话框选择 `.json` 导出 JSON）、真实请求日志、HTTP/HTTPS 本地服务启停、服务运行时长与总请求数；端点测试请求由 Rust 原生发送，绕过 webview CORS 并接受应用自签名证书，目标严格限制在 localhost
 - 状态栏：有效/无效 JSON、光标行号列号、光标 JSON 路径（可复制）、按文档检测的缩进宽度与图形缩放比例随真实状态更新
 - 桌面集成：原生 macOS 菜单（新建、打开 JSON/流、保存、设置与编辑命令）随语言重建；拖放 JSON / JSONL / `.jsonl.zstd` 文件到窗口即可打开
 - 在原型编辑器与 Mock 响应区域注入 CodeMirror 6，保持原型的排版与语法色

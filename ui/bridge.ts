@@ -6909,7 +6909,7 @@ function importBuddyOpenApi(): boolean {
   return true;
 }
 
-function hasRemoteSchemaRef(root: unknown): boolean {
+function hasRemoteSchemaReference(root: unknown): boolean {
   const dataKeys = new Set([
     "example",
     "examples",
@@ -6934,6 +6934,12 @@ function hasRemoteSchemaRef(root: unknown): boolean {
     if (
       typeof schema.$ref === "string" &&
       !schema.$ref.trim().startsWith("#")
+    ) {
+      return true;
+    }
+    if (
+      typeof schema.$id === "string" &&
+      /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\/\/)/.test(schema.$id.trim())
     ) {
       return true;
     }
@@ -7067,11 +7073,11 @@ function patchOpenApiImport(): void {
       );
       return;
     }
-    if (hasRemoteSchemaRef(root)) {
+    if (hasRemoteSchemaReference(root)) {
       w.showSchemaError?.(
         openApiUiText(
-          "Remote $ref is not supported. Use references inside this file.",
-          "不支持远程 $ref，请使用此文件内的引用。"
+          "Remote $ref and $id are not supported. Use references inside this file.",
+          "不支持远程 $ref 和 $id，请使用此文件内的引用。"
         )
       );
       return;
