@@ -3493,8 +3493,12 @@ trajectoryStyle.textContent = `
     font-weight: 700;
     letter-spacing: .06em;
     text-transform: uppercase;
-    color: var(--accent-2);
+    color: var(--ink-3);
   }
+  .trajectory-inspector-kind.user { color: var(--ink-3); }
+  .trajectory-inspector-kind.assistant { color: #7b5cc7; }
+  .trajectory-inspector-kind.tool { color: var(--accent-2); }
+  [data-theme="dark"] .trajectory-inspector-kind.assistant { color: #b49aef; }
   .trajectory-inspector-meta { font-size: 9px; color: var(--ink-3); white-space: nowrap; }
   .trajectory-inspector-head .spacer { flex: 1; }
   .trajectory-inspector-close {
@@ -4816,6 +4820,7 @@ function renderTrajectoryInspector(): void {
     return;
   }
   shell.classList.remove("inspector-hidden");
+  kind.className = `trajectory-inspector-kind ${entry.kind}`;
   kind.textContent = trajectoryRoleLabel(entry).toUpperCase();
   meta.textContent = `${trajectoryText(`Round ${entry.round}`, `第 ${entry.round} 轮`)} · ${trajectoryText(
     `Step ${entry.step}`,
