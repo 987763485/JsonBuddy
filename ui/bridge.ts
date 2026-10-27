@@ -53,6 +53,51 @@ if (!document.querySelector('link[rel="icon"]')) {
   document.head.appendChild(icon);
 }
 
+// One scrollbar treatment for the whole desktop app. Several prototype
+// panels each defined their own width, border and background; the injected
+// rules below override those local variants and also cover CodeMirror.
+const scrollbarStyle = document.createElement("style");
+scrollbarStyle.id = "buddy-global-scrollbars";
+scrollbarStyle.textContent = `
+  :root {
+    --buddy-scrollbar-size: 9px;
+    --buddy-scrollbar-thumb: var(--line-strong);
+    --buddy-scrollbar-thumb-hover: var(--ink-4);
+    --buddy-scrollbar-thumb-active: var(--ink-3);
+  }
+  *::-webkit-scrollbar {
+    width: var(--buddy-scrollbar-size) !important;
+    height: var(--buddy-scrollbar-size) !important;
+    background: transparent !important;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent !important;
+    border: 0 !important;
+  }
+  *::-webkit-scrollbar-thumb {
+    min-height: 28px;
+    background-color: var(--buddy-scrollbar-thumb) !important;
+    background-clip: padding-box !important;
+    border: 2px solid transparent !important;
+    border-radius: 999px !important;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--buddy-scrollbar-thumb-hover) !important;
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background-color: var(--buddy-scrollbar-thumb-active) !important;
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent !important;
+  }
+  *::-webkit-scrollbar-button {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+`;
+document.head.appendChild(scrollbarStyle);
+
 if (hasTauri) {
   // The prototype shrinks itself with CSS zoom to fit a browser stage.
   // In the desktop window it must render at 1:1 and fill the webview.
@@ -526,7 +571,6 @@ editorStyle.textContent = `
   #buddyEditorHost { height: 100%; min-height: 0; display: flex; flex-direction: column; }
   #buddyEditorHost .cm-editor { height: 100%; }
   #buddyEditorHost .cm-editor.cm-focused { outline: none; }
-  #buddyEditorHost .cm-scroller { scrollbar-width: thin; }
   #code { display: none !important; }
 `;
 document.head.appendChild(editorStyle);
@@ -4336,6 +4380,89 @@ let codegenTimer: number | null = null;
 let codegenRequest = 0;
 let codegenPending: { key: string; request: number } | null = null;
 
+const CODEGEN_LINE_HEIGHT = 20;
+const CODEGEN_OVERSCAN = 10;
+const CODEGEN_VIRTUAL_THRESHOLD = 800;
+let codegenLines: string[] = [];
+let codegenMaxLineLength = 0;
+let codegenWindowFrame: number | null = null;
+let codegenScrollBound = false;
+let codegenRenderedStart = -1;
+let codegenRenderedEnd = -1;
+
+function codegenRow(line: string, index: number): string {
+  const html = line ? w.highlightLine(line) : "&nbsp;";
+  return `<div class="cgl"><span class="ln">${index + 1}</span><span class="cl">${html}</span></div>`;
+}
+
+function renderCodegenWindow(force = false): void {
+  const host = document.getElementById("cgCode");
+  if (!host) return;
+  const total = codegenLines.length;
+  if (total <= CODEGEN_VIRTUAL_THRESHOLD) {
+    if (
+      !force &&
+      codegenRenderedStart === 0 &&
+      codegenRenderedEnd === total
+    ) {
+      return;
+    }
+    host.innerHTML = codegenLines
+      .map((line, index) => codegenRow(line, index))
+      .join("");
+    codegenRenderedStart = 0;
+    codegenRenderedEnd = total;
+    return;
+  }
+  const viewport = host.clientHeight || 600;
+  const visible = Math.ceil(viewport / CODEGEN_LINE_HEIGHT);
+  const first = Math.floor(host.scrollTop / CODEGEN_LINE_HEIGHT);
+  const start = Math.max(0, first - CODEGEN_OVERSCAN);
+  const end = Math.min(total, first + visible + CODEGEN_OVERSCAN);
+  if (!force && start === codegenRenderedStart && end === codegenRenderedEnd) {
+    return;
+  }
+  const top = start * CODEGEN_LINE_HEIGHT;
+  const bottom = (total - end) * CODEGEN_LINE_HEIGHT;
+  const widthChars = Math.max(1, codegenMaxLineLength + 1);
+  const html =
+    `<div class="cg-virtual" style="min-width: calc(52px + ${widthChars}ch); font-family: var(--font-mono); font-size: 11.5px;">` +
+    (top ? `<div class="cg-gap" style="height:${top}px"></div>` : "") +
+    codegenLines
+      .slice(start, end)
+      .map((line, offset) => codegenRow(line, start + offset))
+      .join("") +
+    (bottom ? `<div class="cg-gap" style="height:${bottom}px"></div>` : "") +
+    "</div>";
+  const previousTop = host.scrollTop;
+  const previousLeft = host.scrollLeft;
+  host.innerHTML = html;
+  if (host.scrollTop !== previousTop) host.scrollTop = previousTop;
+  if (host.scrollLeft !== previousLeft) host.scrollLeft = previousLeft;
+  codegenRenderedStart = start;
+  codegenRenderedEnd = end;
+}
+
+function scheduleCodegenWindowRender(): void {
+  if (codegenWindowFrame !== null) return;
+  codegenWindowFrame = window.requestAnimationFrame(() => {
+    codegenWindowFrame = null;
+    renderCodegenWindow();
+  });
+}
+
+function bindCodegenScrolling(): void {
+  const host = document.getElementById("cgCode");
+  if (!host || codegenScrollBound) return;
+  codegenScrollBound = true;
+  host.addEventListener("scroll", scheduleCodegenWindowRender, {
+    passive: true
+  });
+  window.addEventListener("resize", scheduleCodegenWindowRender, {
+    passive: true
+  });
+}
+
 function codegenKeyFor(lang: string, doc: BridgeDoc | null): string {
   return `${lang}\u0000${doc?.path ?? ""}\u0000${doc?.name ?? ""}\u0000${
     doc?.text.length ?? 0
@@ -4382,15 +4509,13 @@ function paintGeneratedCode(def: any, generated: GeneratedCode, doc: BridgeDoc |
       ? `${lines.length} 行 · ${(code.length / 1024).toFixed(2)} KB`
       : `${lines.length} lines · ${(code.length / 1024).toFixed(2)} KB`
   );
-  const host = document.getElementById("cgCode");
-  if (host) {
-    host.innerHTML = lines
-      .map((line, index) => {
-        const html = line ? w.highlightLine(line) : "&nbsp;";
-        return `<div class="cgl"><span class="ln">${index + 1}</span><span class="cl">${html}</span></div>`;
-      })
-      .join("");
-  }
+  codegenLines = lines;
+  codegenMaxLineLength = lines.reduce(
+    (longest, line) => Math.max(longest, line.length),
+    0
+  );
+  bindCodegenScrolling();
+  renderCodegenWindow(true);
   document.querySelectorAll(".lang-item").forEach((item) => {
     item.classList.toggle("on", (item as HTMLElement).dataset.lang === def.id);
   });
@@ -4470,6 +4595,7 @@ function scheduleCodegenRender(delay = 180): void {
 function installCodegen(): void {
   if (codegenInstalled) return;
   codegenInstalled = true;
+  bindCodegenScrolling();
   w.renderCodegen = (id: string) => {
     void renderGeneratedCode(id);
   };
@@ -5134,7 +5260,6 @@ mockEditorStyle.textContent = `
   #buddyMockEditorHost.on { display: flex; flex-direction: column; }
   #buddyMockEditorHost .cm-editor { height: 100%; }
   #buddyMockEditorHost .cm-editor.cm-focused { outline: none; }
-  #buddyMockEditorHost .cm-scroller { scrollbar-width: thin; }
   #mockCode.buddy-editing { display: none !important; }
 `;
 document.head.appendChild(mockEditorStyle);
