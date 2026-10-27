@@ -2934,6 +2934,18 @@ let trajectorySelectedKey: string | null = null;
 let trajectoryInspectorHidden = false;
 let trajectoryActiveTab = "overview";
 let trajectoryFollow = true;
+let trajectoryRange: { start: number; end: number } | null = null;
+let trajectoryDraft: { startFraction: number; endFraction: number } | null = null;
+let trajectoryDrag:
+  | {
+      pointerId: number;
+      startX: number;
+      startFraction: number;
+      key: string | null;
+      moved: boolean;
+      track: HTMLElement;
+    }
+  | null = null;
 let trajectoryRenderTimer: number | null = null;
 let trajectoryPaintFrame: number | null = null;
 let trajectoryResetScroll = false;
@@ -2999,7 +3011,14 @@ trajectoryStyle.textContent = `
     border: 1px solid var(--line-strong);
     border-radius: 9px;
     box-shadow: var(--shadow-node);
+    position: relative;
+    user-select: none;
+    touch-action: none;
+    cursor: crosshair;
   }
+  .trajectory-timeline:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .trajectory-timeline.trajectory-dragging { cursor: ew-resize; }
+  .trajectory-timeline.trajectory-dragging .trajectory-span { pointer-events: none; }
   .trajectory-lane { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 8px; }
   .trajectory-lane-label {
     font-size: 8.5px;
@@ -3013,24 +3032,90 @@ trajectoryStyle.textContent = `
     border-radius: 3px;
     background: var(--hover);
     overflow: hidden;
+    cursor: crosshair;
   }
-  .trajectory-tick {
+  .trajectory-span {
     position: absolute;
     top: 1px;
-    width: 3px;
+    z-index: 2;
     height: 7px;
-    padding: 0;
-    border: 0;
+    min-width: 3px;
     border-radius: 1px;
     background: var(--accent);
-    transform: translateX(-50%);
     cursor: pointer;
   }
-  .trajectory-tick:hover { background: var(--ink); }
-  .trajectory-tick.assistant { background: #8b6bd9; }
-  .trajectory-tick.tool { background: var(--code-number); }
-  .trajectory-tick.error { background: var(--code-null); }
-  [data-theme="dark"] .trajectory-tick.assistant { background: #b49aef; }
+  .trajectory-span.user { background: var(--code-string); }
+  .trajectory-span.assistant { background: #8b6bd9; }
+  .trajectory-span.tool { background: var(--accent); }
+  .trajectory-span.error { background: var(--code-null); }
+  [data-theme="dark"] .trajectory-span.assistant { background: #b49aef; }
+  .trajectory-span:hover { filter: brightness(1.1); }
+  .trajectory-span.outside { opacity: .2; }
+  .trajectory-span.current {
+    z-index: 2;
+    box-shadow: 0 0 0 1px var(--card), 0 0 0 2px var(--accent);
+  }
+  .trajectory-span.search-dim { opacity: .16; }
+  .trajectory-range {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    min-width: 1px;
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    border-left: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    pointer-events: none;
+  }
+  .trajectory-range[hidden] { display: none; }
+  .trajectory-range[data-dragging="true"] {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .trajectory-range-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 23px;
+    padding: 0 7px;
+    border: 1px solid var(--accent-ring);
+    border-radius: 5px;
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    font-family: var(--font-ui);
+    font-size: 9px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .trajectory-range-badge:hover { border-color: var(--accent); }
+  .trajectory-range-badge[hidden] { display: none !important; }
+  .trajectory-range-badge .i { width: 10px; height: 10px; }
+  .trajectory-tip {
+    position: fixed;
+    z-index: 2000;
+    width: max-content;
+    max-width: 340px;
+    padding: 8px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    background: var(--card);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+    color: var(--ink-2);
+    font-size: 9.5px;
+    line-height: 1.55;
+    pointer-events: none;
+  }
+  .trajectory-tip[hidden] { display: none !important; }
+  .trajectory-tip-title { font-weight: 700; color: var(--ink); }
+  .trajectory-tip-time { font-family: var(--font-mono); font-size: 9px; color: var(--ink-3); }
+  .trajectory-tip-preview {
+    margin-top: 3px;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-3);
+  }
   .trajectory-scroll {
     position: relative;
     flex: 1;
@@ -3503,39 +3588,251 @@ function trajectoryMetricDuration(): string {
 }
 
 function trajectoryTimelineHtml(entries: TrajectoryEntry[]): string {
-  const maxIndex = Math.max(1, entries.length - 1);
-  const sample = (items: TrajectoryEntry[]) => {
-    if (items.length <= 700) return items;
-    const stride = Math.ceil(items.length / 700);
-    return items.filter((_, index) => index % stride === 0 || index === items.length - 1);
-  };
-  const marker = (entry: TrajectoryEntry) => {
-    const left =
-      entries.length === 1
-        ? 50
-        : Math.max(1, Math.min(99, (entry.index / maxIndex) * 100));
+  const total = Math.max(1, entries.length);
+  const queryInput = document.getElementById("monitorFilter") as HTMLInputElement | null;
+  const query = String(queryInput?.value ?? "").trim().toLowerCase();
+  const span = (entry: TrajectoryEntry, stride = 1) => {
+    const left = (entry.index / total) * 100;
+    const width = (stride / total) * 100;
     const status = entry.call ? trajectoryStatus(entry.call) : null;
-    const title = `${trajectoryText(`Round ${entry.round}`, `第 ${entry.round} 轮`)} · ${
-      trajectoryText(`Step ${entry.step}`, `第 ${entry.step} 步`)
-    }${entry.call ? ` · ${entry.call.name}` : ""}`;
-    return `<button type="button" class="trajectory-tick ${entry.kind}${
-      status?.className === "err" ? " error" : ""
-    }" data-trajectory-key="${w.escHtml(entry.key)}" style="left:${left}%" title="${w.escHtml(
-      title
-    )}" aria-label="${w.escHtml(title)}"></button>`;
-  };
-  const users = sample(entries.filter((entry) => entry.kind === "user"));
-  const assistants = sample(entries.filter((entry) => entry.kind === "assistant"));
-  const tools = sample(entries.filter((entry) => entry.kind === "tool"));
-  const lane = (label: string, items: TrajectoryEntry[]) =>
-    `<div class="trajectory-lane"><span class="trajectory-lane-label">${w.escHtml(
+    const classes = [
+      "trajectory-span",
+      entry.kind,
+      status?.className === "err" ? "error" : "",
+      trajectoryRange &&
+      (entry.index < trajectoryRange.start || entry.index > trajectoryRange.end)
+        ? "outside"
+        : "",
+      entry.key === trajectorySelectedKey ? "current" : "",
+      query && !trajectoryEntryMatches(entry, query) ? "search-dim" : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const label = `${trajectoryRoleLabel(entry)} · ${trajectoryText(
+      `Round ${entry.round}`,
+      `第 ${entry.round} 轮`
+    )} · ${trajectoryText(`Step ${entry.step}`, `第 ${entry.step} 步`)}${
+      entry.call ? ` · ${entry.call.name}` : ""
+    }`;
+    return `<span class="${classes}" data-trajectory-key="${w.escHtml(
+      entry.key
+    )}" data-trajectory-index="${entry.index}" role="presentation" aria-label="${w.escHtml(
       label
-    )}</span><div class="trajectory-track">${items.map(marker).join("")}</div></div>`;
+    )}" style="left:${left}%;width:max(3px, calc(${width}% - 2px))"></span>`;
+  };
+  const lane = (label: string, items: TrajectoryEntry[]) => {
+    const stride = items.length > 1_200 ? Math.ceil(items.length / 1_200) : 1;
+    const sampled = stride > 1
+      ? items.filter((_, index) => index % stride === 0 || index === items.length - 1)
+      : items;
+    return `<div class="trajectory-lane"><span class="trajectory-lane-label">${w.escHtml(
+      label
+    )}</span><div class="trajectory-track"><div class="trajectory-range" hidden></div>${sampled
+      .map((entry) => span(entry, stride))
+      .join("")}</div></div>`;
+  };
   return (
-    lane(trajectoryText("Input", "输入"), users) +
-    lane(trajectoryText("Model", "模型"), assistants) +
-    lane(trajectoryText("Tools", "工具"), tools)
+    lane(trajectoryText("Input", "输入"), entries.filter((entry) => entry.kind === "user")) +
+    lane(
+      trajectoryText("Model", "模型"),
+      entries.filter((entry) => entry.kind === "assistant")
+    ) +
+    lane(trajectoryText("Tools", "工具"), entries.filter((entry) => entry.kind === "tool"))
   );
+}
+
+
+function trajectoryCurrentQuery(): string {
+  const input = document.getElementById("monitorFilter") as HTMLInputElement | null;
+  return String(input?.value ?? "").trim().toLowerCase();
+}
+
+function trajectoryFilterEntries(query = trajectoryCurrentQuery()): TrajectoryEntry[] {
+  return trajectoryAllEntries.filter((entry) => {
+    if (trajectoryRange && (entry.index < trajectoryRange.start || entry.index > trajectoryRange.end)) {
+      return false;
+    }
+    return !query || trajectoryEntryMatches(entry, query);
+  });
+}
+
+function trajectoryRangeEntries(): TrajectoryEntry[] {
+  if (!trajectoryRange) return [];
+  return trajectoryAllEntries.filter(
+    (entry) => entry.index >= trajectoryRange!.start && entry.index <= trajectoryRange!.end
+  );
+}
+
+function updateTrajectoryRangeChrome(): void {
+  const badge = document.getElementById("trajectoryRangeBadge");
+  const label = document.getElementById("trajectoryRangeText");
+  if (!badge || !label) return;
+  if (!trajectoryRange) {
+    badge.hidden = true;
+    return;
+  }
+  const count = trajectoryRangeEntries().length;
+  badge.hidden = false;
+  label.textContent = trajectoryText(`Range · ${count}`, `区间 · ${count}`);
+  badge.title = trajectoryText("Clear range filter (Esc)", "清除区间过滤 (Esc)");
+}
+
+function updateTrajectoryTimelineFocus(): void {
+  const total = Math.max(1, trajectoryAllEntries.length);
+  const query = trajectoryCurrentQuery();
+  const draft = trajectoryDraft;
+  document.querySelectorAll<HTMLElement>(".trajectory-span").forEach((span) => {
+    const index = Number(span.dataset.trajectoryIndex);
+    let outside = false;
+    if (draft) {
+      const from = Math.min(draft.startFraction, draft.endFraction) * total;
+      const to = Math.max(draft.startFraction, draft.endFraction) * total;
+      outside = !(index + 1 > from && index < to);
+    } else if (trajectoryRange) {
+      outside = index < trajectoryRange.start || index > trajectoryRange.end;
+    }
+    span.classList.toggle("outside", outside);
+    span.classList.toggle("current", span.dataset.trajectoryKey === trajectorySelectedKey);
+    const entry = trajectoryAllEntries[index];
+    span.classList.toggle(
+      "search-dim",
+      !!query && !!entry && !trajectoryEntryMatches(entry, query)
+    );
+  });
+  const selection = draft
+    ? {
+        start: Math.min(draft.startFraction, draft.endFraction),
+        end: Math.max(draft.startFraction, draft.endFraction)
+      }
+    : trajectoryRange
+      ? {
+          start: trajectoryRange.start / total,
+          end: (trajectoryRange.end + 1) / total
+        }
+      : null;
+  document.querySelectorAll<HTMLElement>(".trajectory-range").forEach((bar) => {
+    if (!selection) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    bar.style.left = `${selection.start * 100}%`;
+    bar.style.width = `${Math.max(0.2, (selection.end - selection.start) * 100)}%`;
+    bar.dataset.dragging = draft ? "true" : "false";
+  });
+}
+
+function hideTrajectoryTip(): void {
+  const tip = document.getElementById("trajectoryTip");
+  if (tip) tip.hidden = true;
+}
+
+function trajectoryClock(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3
+  });
+}
+
+function trajectoryTipHtml(entry: TrajectoryEntry): string {
+  const role = trajectoryRoleLabel(entry);
+  const title = `${role}${
+    entry.call ? ` · ${entry.call.name}` : entry.model ? ` · ${entry.model}` : ""
+  }`;
+  const start = trajectoryClock(entry.timestamp);
+  let time = start;
+  if (entry.call?.durationMs != null && entry.timestamp) {
+    const startMs = new Date(entry.timestamp).getTime();
+    if (Number.isFinite(startMs)) {
+      time = `${start} → ${trajectoryClock(new Date(startMs + entry.call.durationMs).toISOString())}`;
+    }
+  }
+  const details = [
+    trajectoryText(`Round ${entry.round}`, `第 ${entry.round} 轮`),
+    trajectoryText(`Step ${entry.step}`, `第 ${entry.step} 步`),
+    entry.call?.durationMs != null
+      ? trajectoryText(`Total ${entry.call.durationMs} ms`, `总计 ${entry.call.durationMs} 毫秒`)
+      : "",
+    entry.call ? trajectoryStatus(entry.call).label : ""
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const preview =
+    entry.kind === "tool" && entry.call
+      ? [chatToolSummary(entry.call), trajectoryOneLine(entry.call.output, 120)]
+          .filter(Boolean)
+          .join(" · ")
+      : trajectoryOneLine(entry.text || entry.reasoning, 160);
+  return `<div class="trajectory-tip-title">${w.escHtml(title)}</div>
+    ${time ? `<div class="trajectory-tip-time">${w.escHtml(time)}</div>` : ""}
+    <div class="trajectory-tip-time">${w.escHtml(details)}</div>
+    ${preview ? `<div class="trajectory-tip-preview">${w.escHtml(preview)}</div>` : ""}`;
+}
+
+function showTrajectoryTip(entry: TrajectoryEntry, clientX: number, clientY: number): void {
+  const tip = document.getElementById("trajectoryTip");
+  if (!tip || !trajectoryModeActive()) return;
+  tip.innerHTML = trajectoryTipHtml(entry);
+  tip.hidden = false;
+  const width = Math.min(340, tip.offsetWidth || 300);
+  const height = tip.offsetHeight || 80;
+  tip.style.left = `${Math.max(8, Math.min(clientX + 14, window.innerWidth - width - 12))}px`;
+  tip.style.top = `${Math.max(8, Math.min(clientY + 14, window.innerHeight - height - 12))}px`;
+}
+
+function clearTrajectoryRange(): void {
+  if (!trajectoryRange) return;
+  trajectoryRange = null;
+  trajectoryDraft = null;
+  trajectoryVisibleEntries = trajectoryFilterEntries();
+  const target =
+    trajectoryVisibleEntries.find((entry) => entry.key === trajectorySelectedKey) ??
+    trajectoryVisibleEntries[0];
+  trajectorySelectedKey = target?.key ?? null;
+  if (target) trajectoryInspectorHidden = false;
+  updateTrajectoryRangeChrome();
+  updateTrajectoryTimelineFocus();
+  trajectoryPaintRows();
+  renderTrajectoryInspector();
+}
+
+function applyTrajectoryRange(start: number, end: number): void {
+  const total = trajectoryAllEntries.length;
+  if (!total) return;
+  trajectoryRange = {
+    start: Math.max(0, Math.min(total - 1, Math.min(start, end))),
+    end: Math.max(0, Math.min(total - 1, Math.max(start, end)))
+  };
+  trajectoryDraft = null;
+  trajectoryFollow = false;
+  trajectoryVisibleEntries = trajectoryFilterEntries();
+  const target =
+    trajectoryVisibleEntries.find((entry) => entry.key === trajectorySelectedKey) ??
+    trajectoryVisibleEntries[0];
+  trajectorySelectedKey = target?.key ?? null;
+  if (target) {
+    trajectoryInspectorHidden = false;
+    trajectoryActiveTab = "overview";
+  }
+  const scroll = document.getElementById("trajectoryScroll");
+  if (scroll) scroll.scrollTop = 0;
+  updateTrajectoryRangeChrome();
+  updateTrajectoryTimelineFocus();
+  trajectoryPaintRows();
+  renderTrajectoryInspector();
+  hideTrajectoryTip();
+}
+
+function trajectoryHintForClick(fraction: number): TrajectoryEntry | null {
+  const total = trajectoryAllEntries.length;
+  if (!total) return null;
+  const index = Math.max(0, Math.min(total - 1, Math.floor(fraction * total)));
+  return trajectoryAllEntries[index] ?? null;
 }
 
 function trajectoryPre(text: string, limit = 120_000): string {
@@ -3774,24 +4071,31 @@ function renderTrajectory(): void {
     trajectoryInspectorHidden = false;
     trajectoryActiveTab = "overview";
     trajectoryFollow = true;
+    trajectoryRange = null;
+    trajectoryDraft = null;
+    trajectoryDrag = null;
   }
+  hideTrajectoryTip();
   const previousScrollTop = scroll.scrollTop;
   trajectoryAllEntries = buildTrajectoryEntries();
-  const queryInput = document.getElementById("monitorFilter") as HTMLInputElement | null;
-  const query = String(queryInput?.value ?? "").trim().toLowerCase();
-  trajectoryVisibleEntries = query
-    ? trajectoryAllEntries.filter((entry) => trajectoryEntryMatches(entry, query))
-    : [...trajectoryAllEntries];
+  const query = trajectoryCurrentQuery();
+  trajectoryVisibleEntries = trajectoryFilterEntries(query);
   if (
     !trajectorySelectedKey ||
-    !trajectoryAllEntries.some((entry) => entry.key === trajectorySelectedKey)
+    !trajectoryVisibleEntries.some((entry) => entry.key === trajectorySelectedKey)
   ) {
-    const candidates = trajectoryAllEntries.filter((entry) => entry.kind === "tool");
-    const target = trajectoryFollow
-      ? [...candidates].reverse().find(Boolean) ?? trajectoryAllEntries[trajectoryAllEntries.length - 1]
-      : trajectoryAllEntries[0];
-    trajectorySelectedKey = target?.key ?? null;
-    if (trajectorySelectedKey) trajectoryInspectorHidden = false;
+    if (!query && !trajectoryRange) {
+      const candidates = trajectoryAllEntries.filter((entry) => entry.kind === "tool");
+      const target = trajectoryFollow
+        ? [...candidates].reverse().find(Boolean) ?? trajectoryAllEntries[trajectoryAllEntries.length - 1]
+        : trajectoryAllEntries[0];
+      trajectorySelectedKey = target?.key ?? null;
+      if (trajectorySelectedKey) trajectoryInspectorHidden = false;
+    } else {
+      const target = trajectoryVisibleEntries[0];
+      trajectorySelectedKey = target?.key ?? null;
+      if (target) trajectoryInspectorHidden = false;
+    }
   }
   if (duration) duration.textContent = trajectoryMetricDuration();
   const computedTurns = trajectoryAllEntries.reduce(
@@ -3817,17 +4121,29 @@ function renderTrajectory(): void {
         "No trajectory events",
         "没有轨迹事件"
       )}</div>`;
+  updateTrajectoryRangeChrome();
+  updateTrajectoryTimelineFocus();
   const empty = document.getElementById("trajectoryEmpty");
   if (empty) {
-    empty.textContent = buddyStreamSnapshot
-      ? trajectoryText(
-          "No user, assistant, or tool events in this stream.",
-          "这个流中没有用户、助手或工具事件。"
-        )
-      : trajectoryText(
-          "Open a JSONL file to inspect its trajectory.",
-          "打开 JSONL 文件以查看轨迹。"
-        );
+    empty.textContent = !trajectoryAllEntries.length
+      ? buddyStreamSnapshot
+        ? trajectoryText(
+            "No user, assistant, or tool events in this stream.",
+            "这个流中没有用户、助手或工具事件。"
+          )
+        : trajectoryText(
+            "Open a JSONL file to inspect its trajectory.",
+            "打开 JSONL 文件以查看轨迹。"
+          )
+      : query
+        ? trajectoryText(
+            "No trajectory events match the search.",
+            "没有匹配搜索的轨迹事件。"
+          )
+        : trajectoryText(
+            "No trajectory events in this range.",
+            "这个区间内没有轨迹事件。"
+          );
   }
   if (trajectoryResetScroll) {
     scroll.scrollTop = 0;
@@ -3925,9 +4241,10 @@ function installTrajectoryView(): void {
         <span class="trajectory-stat"><svg class="i" viewBox="0 0 24 24"><use href="#i-history"/></svg><span id="trajectoryTurnsLabel">Turns</span><b id="trajectoryTurns">0</b></span>
         <span class="trajectory-stat"><svg class="i" viewBox="0 0 24 24"><use href="#i-wrench"/></svg><span id="trajectoryCallsLabel">Calls</span><b id="trajectoryCalls">0</b></span>
         <span class="trajectory-spacer"></span>
+        <button type="button" class="trajectory-range-badge" id="trajectoryRangeBadge" hidden><span id="trajectoryRangeText">0</span><svg class="i" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
         <span class="trajectory-stat"><b id="trajectoryStepCount">0 steps</b></span>
       </div>
-      <div class="trajectory-timeline" id="trajectoryTimeline"></div>
+      <div class="trajectory-timeline" id="trajectoryTimeline" tabindex="0"></div>
       <div class="trajectory-scroll" id="trajectoryScroll">
         <div class="trajectory-canvas" id="trajectoryRows"></div>
         <div class="trajectory-empty" id="trajectoryEmpty">Open a JSONL file to inspect its trajectory.</div>
@@ -3943,7 +4260,8 @@ function installTrajectoryView(): void {
       </div>
       <div class="trajectory-tabs" id="trajectoryTabs"></div>
       <div class="trajectory-inspector-body" id="trajectoryInspectorBody"></div>
-    </aside>`;
+    </aside>
+    <div class="trajectory-tip" id="trajectoryTip" hidden></div>`;
     if (chat) chat.insertAdjacentElement("afterend", shell);
     else content.appendChild(shell);
   }
@@ -3957,18 +4275,132 @@ function installTrajectoryView(): void {
   }
   const timeline = document.getElementById("trajectoryTimeline");
   if (timeline) {
-    timeline.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-trajectory-key]") : null;
-      const key = target?.dataset.trajectoryKey;
-      if (!key) return;
-      trajectoryFollow = false;
-      if (!trajectoryVisibleEntries.some((entry) => entry.key === key)) {
-        const input = document.getElementById("monitorFilter") as HTMLInputElement | null;
-        if (input) input.value = "";
-        trajectoryResetScroll = false;
-        renderTrajectory();
+    const fractionAt = (track: HTMLElement, clientX: number): number => {
+      const rect = track.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    };
+    const finishDrag = (event: PointerEvent, cancelled = false) => {
+      const drag = trajectoryDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const startFraction = drag.startFraction;
+      const key = drag.key;
+      const track = drag.track;
+      const wasMoved = drag.moved || Math.abs(event.clientX - drag.startX) >= 3;
+      trajectoryDrag = null;
+      trajectoryDraft = null;
+      timeline.classList.remove("trajectory-dragging");
+      try {
+        if (timeline.hasPointerCapture(event.pointerId)) {
+          timeline.releasePointerCapture(event.pointerId);
+        }
+      } catch {
+        // The pointer may already be released.
       }
-      trajectorySelect(key);
+      if (cancelled) {
+        updateTrajectoryTimelineFocus();
+        hideTrajectoryTip();
+        return;
+      }
+      const fraction = fractionAt(track, event.clientX);
+      if (!wasMoved) {
+        if (key) {
+          clearTrajectoryRange();
+          trajectorySelect(key);
+        } else {
+          const target = trajectoryHintForClick(fraction);
+          clearTrajectoryRange();
+          if (target) trajectorySelect(target.key);
+        }
+        updateTrajectoryTimelineFocus();
+        hideTrajectoryTip();
+        return;
+      }
+      const total = trajectoryAllEntries.length;
+      if (!total) {
+        clearTrajectoryRange();
+        updateTrajectoryTimelineFocus();
+        return;
+      }
+      const from = Math.min(startFraction, fraction);
+      const to = Math.max(startFraction, fraction);
+      const start = Math.max(0, Math.min(total - 1, Math.floor(from * total)));
+      const end = Math.max(
+        start,
+        Math.min(total - 1, Math.max(0, Math.ceil(to * total) - 1))
+      );
+      applyTrajectoryRange(start, end);
+      hideTrajectoryTip();
+    };
+    timeline.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !trajectoryAllEntries.length) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const track = target?.closest<HTMLElement>(".trajectory-track");
+      if (!track) return;
+      event.preventDefault();
+      const span = target?.closest<HTMLElement>(".trajectory-span");
+      const fraction = fractionAt(track, event.clientX);
+      trajectoryFollow = false;
+      trajectoryDrag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startFraction: fraction,
+        key: span?.dataset.trajectoryKey ?? null,
+        moved: false,
+        track
+      };
+      trajectoryDraft = { startFraction: fraction, endFraction: fraction };
+      timeline.classList.add("trajectory-dragging");
+      try {
+        timeline.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may be unavailable in embedded webviews.
+      }
+      hideTrajectoryTip();
+      updateTrajectoryTimelineFocus();
+    });
+    timeline.addEventListener("pointermove", (event) => {
+      const drag = trajectoryDrag;
+      if (drag) {
+        if (event.pointerId !== drag.pointerId) return;
+        event.preventDefault();
+        if (Math.abs(event.clientX - drag.startX) >= 3) drag.moved = true;
+        const fraction = fractionAt(drag.track, event.clientX);
+        trajectoryDraft = {
+          startFraction: drag.startFraction,
+          endFraction: fraction
+        };
+        updateTrajectoryTimelineFocus();
+        hideTrajectoryTip();
+        return;
+      }
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>(".trajectory-span") : null;
+      const index = Number(target?.dataset.trajectoryIndex);
+      const entry = Number.isFinite(index) ? trajectoryAllEntries[index] : undefined;
+      if (entry) showTrajectoryTip(entry, event.clientX, event.clientY);
+      else hideTrajectoryTip();
+    });
+    timeline.addEventListener("pointerup", (event) => finishDrag(event));
+    timeline.addEventListener("pointercancel", (event) => finishDrag(event, true));
+    timeline.addEventListener("pointerleave", () => {
+      if (!trajectoryDrag) hideTrajectoryTip();
+    });
+    timeline.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      clearTrajectoryRange();
+      hideTrajectoryTip();
+    });
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !trajectoryRange || !trajectoryModeActive()) return;
+    event.preventDefault();
+    clearTrajectoryRange();
+    hideTrajectoryTip();
+  });
+  const rangeBadge = document.getElementById("trajectoryRangeBadge");
+  if (rangeBadge) {
+    rangeBadge.addEventListener("click", () => {
+      clearTrajectoryRange();
+      hideTrajectoryTip();
     });
   }
   const scroll = document.getElementById("trajectoryScroll");
@@ -4002,6 +4434,7 @@ function installTrajectoryView(): void {
   const originalSetMonitorMode = w.setMonitorMode;
   w.setMonitorMode = (mode: string) => {
     if (mode !== "trajectory") {
+      hideTrajectoryTip();
       originalSetMonitorMode(mode);
       return;
     }
