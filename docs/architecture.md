@@ -52,6 +52,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 | `src-tauri/src/data.rs` | `~/.json_buddy` 目录布局、原子级文件权限、JSON 读写 |
 | `src-tauri/src/settings.rs` | 设置结构、校验、加载与保存 |
 | `src-tauri/src/documents.rs` | 文档读取/保存/新建、最近 JSON/流存储、50 MB 限制 |
+| `src-tauri/src/codegen.rs` | JSON 类型图推断、字段合并、命名、可选/可空处理与 12 种目标输出 |
 | `src-tauri/src/streams.rs` | JSONL/zstd 快照、原生文件监听、增量帧解码、实时事件、溢出归档与历史读取 |
 | `src-tauri/src/network.rs` | 原生端点测试请求：仅回环地址、无代理/重定向、接受应用自签名证书 |
 | `src-tauri/src/menu.rs` | 原生 macOS 菜单构建与语言重建 |
@@ -89,6 +90,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 - `save_text_file`
 - `parse_yaml_document`
 - `test_local_request` — 由 Rust 发送本地 Mock 测试请求
+- `generate_code` — 在 Rust 中根据 JSON 文本推断类型并生成指定语言的代码，返回代码、文件名、根类型、类型数、记录数与根摘要
 
 ## 数据与安全边界
 
@@ -111,7 +113,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 6. **JSON Mock**：Rust 项目库、共享 localhost 服务、项目独立挂载/卸载、无状态路由（绑定 `127.0.0.1` / `::1`，路径参数与查询参数匹配，穿越拦截）、HTTP/HTTPS、真实请求日志、运行时长与总请求数、原型项目/端点/响应编辑、JSON Schema / OpenAPI 导入、生成/导出（已完成）；生成参数随接口持久化，生成数据通过独立的运行期响应供服务使用并在项目打开/启动时重新生成，不写入项目文件，编辑生成响应时转为固定响应；端点测试请求改走 Rust 原生 HTTP 客户端，HTTPS 自签名证书与 webview CORS 不再影响测试
 7. **审计**：Rust 单一策略模块、工具调用分类、500 条上限、设置持久化、按类别复用确认、原始事件定位、动态本地化与真实审计面板（已完成）；Mock 路由穿越和应用级操作写入内存审计存储，并通过 `audit-entry` 事件合并到当前审计面板
 8. **树 / 表格 / 图形视图**：树视图、表格视图与图形视图均已接入真实 JSON（展开/筛选/检查器、分节表格/列选择/长数据虚拟窗口、节点/边与布局切换）
-9. **代码生成**：从当前 JSON 推断类型模型，输出 12 个目标（11 种语言 + JSON Schema），支持可选/可空字段与单文件 `$defs`（已完成）
+9. **代码生成**：类型推断、字段合并、命名、可选/可空处理与 12 个目标（11 种语言 + JSON Schema）的输出全部由 Rust `codegen.rs` 完成，支持单文件 `$defs`；`ui/bridge.ts` 只调用 `generate_code`、做请求排序与结果缓存并渲染代码（已完成）
 10. **导入导出**：CSV/JSON/JSONL 导入写入 `~/.json_buddy/documents`；CSV、Excel、Mock 导出与生成代码保存走原生对话框（已完成）；窗口级拖放打开 JSON、JSONL 与 `.jsonl.zstd`
 11. **桌面集成**：原生菜单提供新建、打开、保存、设置与标准编辑命令，并随语言重建；状态栏缩进宽度与图形缩放来自真实状态（已完成）
 12. **文档保存**：编辑停止后防抖自动保存，切换文档或失焦时刷新；标题栏圆点反映脏状态，手动保存与自动保存共用串行写入链（已完成）
@@ -119,6 +121,7 @@ React 源码位于 `src/`，保留为此前业务与视图实现的参考；Taur
 ## 测试策略
 
 - 前端：`npm run check`、`npm run build`
+- 代码生成：Rust 单元测试用固定样例对 12 个目标逐行比对参考输出，覆盖嵌套数组、可选字段、`null`、重复嵌套对象命名、空文档与非法 JSON；前端不再包含类型推断或代码生成逻辑
 - Rust：`cargo test`
 - Tauri 集成：`npm run tauri:build -- --debug`
 - 功能模块完成后追加对应单元测试和端到端验证；不修改锁定 UI 文件。

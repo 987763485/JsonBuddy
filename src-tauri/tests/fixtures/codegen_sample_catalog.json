@@ -1,0 +1,137 @@
+{
+  "name": "sample catalog.json",
+  "data": {
+    "catalog": {
+      "id": "cat-1",
+      "title": "Demo",
+      "active": true,
+      "count": 2,
+      "score": 9.5,
+      "owner": null,
+      "tags": [
+        "a",
+        "b"
+      ],
+      "items": [
+        {
+          "id": 1,
+          "sku": "A-1",
+          "price": 2.5,
+          "meta": {
+            "color": "red",
+            "available": true
+          },
+          "note": null
+        },
+        {
+          "id": 2,
+          "sku": "B-2",
+          "price": 3,
+          "meta": {
+            "color": "blue",
+            "size": "L",
+            "available": false
+          }
+        }
+      ],
+      "groups": [
+        {
+          "name": "first",
+          "members": [
+            {
+              "name": "Ada",
+              "age": 36
+            }
+          ]
+        },
+        {
+          "name": "second",
+          "extra": true,
+          "members": [
+            {
+              "name": "Grace",
+              "age": 85,
+              "admin": true
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "types": 8,
+  "records": 1,
+  "languages": {
+    "javascript": {
+      "ext": "js",
+      "code": "// Generated from sample catalog.json\n\n/**\n * @typedef {Object} Meta\n * @property {string} color\n * @property {boolean} available\n */\n\n/**\n * @typedef {Object} Item\n * @property {number} id\n * @property {string} sku\n * @property {number} price\n * @property {Meta} meta\n * @property {unknown|null} [note]\n */\n\n/**\n * @typedef {Object} Member\n * @property {string} name\n * @property {number} age\n */\n\n/**\n * @typedef {Object} Group\n * @property {string} name\n * @property {Member[]} members\n * @property {boolean} [extra]\n */\n\n/**\n * @typedef {Object} Catalog\n * @property {string} id\n * @property {string} title\n * @property {boolean} active\n * @property {number} count\n * @property {number} score\n * @property {unknown|null} owner\n * @property {string[]} tags\n * @property {Item[]} items\n * @property {Group[]} groups\n */\n\n/**\n * @typedef {Object} SampleCatalog\n * @property {Catalog} catalog\n */\n\n/**\n * @typedef {Object} Meta2\n * @property {string} color\n * @property {string} size\n * @property {boolean} available\n */\n\n/**\n * @typedef {Object} Member2\n * @property {string} name\n * @property {number} age\n * @property {boolean} admin\n */\n\nexport {};",
+      "file": "samplecatalog.js",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "typescript": {
+      "ext": "ts",
+      "code": "// Generated from sample catalog.json\n\nexport interface Meta {\n  color: string;\n  available: boolean;\n}\n\nexport interface Item {\n  id: number;\n  sku: string;\n  price: number;\n  meta: Meta;\n  note?: unknown | null;\n}\n\nexport interface Member {\n  name: string;\n  age: number;\n}\n\nexport interface Group {\n  name: string;\n  members: Member[];\n  extra?: boolean;\n}\n\nexport interface Catalog {\n  id: string;\n  title: string;\n  active: boolean;\n  count: number;\n  score: number;\n  owner: unknown | null;\n  tags: string[];\n  items: Item[];\n  groups: Group[];\n}\n\nexport interface SampleCatalog {\n  catalog: Catalog;\n}\n\nexport interface Meta2 {\n  color: string;\n  size: string;\n  available: boolean;\n}\n\nexport interface Member2 {\n  name: string;\n  age: number;\n  admin: boolean;\n}",
+      "file": "samplecatalog.ts",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "java": {
+      "ext": "java",
+      "code": "// Generated from sample catalog.json\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\n\nclass Meta {\n    public String color;\n    public Boolean available;\n}\n\nclass Item {\n    public Long id;\n    public String sku;\n    public Double price;\n    public Meta meta;\n    public Optional<Object> note = Optional.empty();\n}\n\nclass Member {\n    public String name;\n    public Long age;\n}\n\nclass Group {\n    public String name;\n    public List<Member> members;\n    public Optional<Boolean> extra = Optional.empty();\n}\n\nclass Catalog {\n    public String id;\n    public String title;\n    public Boolean active;\n    public Long count;\n    public Double score;\n    public Object owner;\n    public List<String> tags;\n    public List<Item> items;\n    public List<Group> groups;\n}\n\nclass SampleCatalog {\n    public Catalog catalog;\n}\n\nclass Meta2 {\n    public String color;\n    public String size;\n    public Boolean available;\n}\n\nclass Member2 {\n    public String name;\n    public Long age;\n    public Boolean admin;\n}",
+      "file": "SampleCatalog.java",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "csharp": {
+      "ext": "cs",
+      "code": "// Generated from sample catalog.json\nusing System.Collections.Generic;\n\npublic class Meta\n{\n    public string Color { get; set; }\n    public bool Available { get; set; }\n}\n\npublic class Item\n{\n    public long Id { get; set; }\n    public string Sku { get; set; }\n    public double Price { get; set; }\n    public Meta Meta { get; set; }\n    public object? Note { get; set; }\n}\n\npublic class Member\n{\n    public string Name { get; set; }\n    public long Age { get; set; }\n}\n\npublic class Group\n{\n    public string Name { get; set; }\n    public List<Member> Members { get; set; }\n    public bool? Extra { get; set; }\n}\n\npublic class Catalog\n{\n    public string Id { get; set; }\n    public string Title { get; set; }\n    public bool Active { get; set; }\n    public long Count { get; set; }\n    public double Score { get; set; }\n    public object? Owner { get; set; }\n    public List<string> Tags { get; set; }\n    public List<Item> Items { get; set; }\n    public List<Group> Groups { get; set; }\n}\n\npublic class SampleCatalog\n{\n    public Catalog Catalog { get; set; }\n}\n\npublic class Meta2\n{\n    public string Color { get; set; }\n    public string Size { get; set; }\n    public bool Available { get; set; }\n}\n\npublic class Member2\n{\n    public string Name { get; set; }\n    public long Age { get; set; }\n    public bool Admin { get; set; }\n}",
+      "file": "SampleCatalog.cs",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "go": {
+      "ext": "go",
+      "code": "// Generated from sample catalog.json\n\npackage models\n\ntype Meta struct {\n\tColor string `json:\"color\"`\n\tAvailable bool `json:\"available\"`\n}\n\ntype Item struct {\n\tId int64 `json:\"id\"`\n\tSku string `json:\"sku\"`\n\tPrice float64 `json:\"price\"`\n\tMeta Meta `json:\"meta\"`\n\tNote interface{} `json:\"note,omitempty\"`\n}\n\ntype Member struct {\n\tName string `json:\"name\"`\n\tAge int64 `json:\"age\"`\n}\n\ntype Group struct {\n\tName string `json:\"name\"`\n\tMembers []Member `json:\"members\"`\n\tExtra bool `json:\"extra,omitempty\"`\n}\n\ntype Catalog struct {\n\tId string `json:\"id\"`\n\tTitle string `json:\"title\"`\n\tActive bool `json:\"active\"`\n\tCount int64 `json:\"count\"`\n\tScore float64 `json:\"score\"`\n\tOwner interface{} `json:\"owner\"`\n\tTags []string `json:\"tags\"`\n\tItems []Item `json:\"items\"`\n\tGroups []Group `json:\"groups\"`\n}\n\ntype SampleCatalog struct {\n\tCatalog Catalog `json:\"catalog\"`\n}\n\ntype Meta2 struct {\n\tColor string `json:\"color\"`\n\tSize string `json:\"size\"`\n\tAvailable bool `json:\"available\"`\n}\n\ntype Member2 struct {\n\tName string `json:\"name\"`\n\tAge int64 `json:\"age\"`\n\tAdmin bool `json:\"admin\"`\n}",
+      "file": "samplecatalog.go",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "rust": {
+      "ext": "rs",
+      "code": "// Generated from sample catalog.json\n\nuse serde::{Deserialize, Serialize};\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Meta {\n    pub color: String,\n    pub available: bool,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Item {\n    pub id: i64,\n    pub sku: String,\n    pub price: f64,\n    pub meta: Meta,\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub note: Option<serde_json::Value>,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Member {\n    pub name: String,\n    pub age: i64,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Group {\n    pub name: String,\n    pub members: Vec<Member>,\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub extra: Option<bool>,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Catalog {\n    pub id: String,\n    pub title: String,\n    pub active: bool,\n    pub count: i64,\n    pub score: f64,\n    pub owner: Option<serde_json::Value>,\n    pub tags: Vec<String>,\n    pub items: Vec<Item>,\n    pub groups: Vec<Group>,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct SampleCatalog {\n    pub catalog: Catalog,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Meta2 {\n    pub color: String,\n    pub size: String,\n    pub available: bool,\n}\n\n#[derive(Clone, Debug, Serialize, Deserialize)]\npub struct Member2 {\n    pub name: String,\n    pub age: i64,\n    pub admin: bool,\n}",
+      "file": "samplecatalog.rs",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "swift": {
+      "ext": "swift",
+      "code": "// Generated from sample catalog.json\nimport Foundation\n\nstruct Meta: Codable {\n    let color: String\n    let available: Bool\n}\n\nstruct Item: Codable {\n    let id: Int\n    let sku: String\n    let price: Double\n    let meta: Meta\n    let note: JSONValue?\n}\n\nstruct Member: Codable {\n    let name: String\n    let age: Int\n}\n\nstruct Group: Codable {\n    let name: String\n    let members: [Member]\n    let extra: Bool?\n}\n\nstruct Catalog: Codable {\n    let id: String\n    let title: String\n    let active: Bool\n    let count: Int\n    let score: Double\n    let owner: JSONValue?\n    let tags: [String]\n    let items: [Item]\n    let groups: [Group]\n}\n\nstruct SampleCatalog: Codable {\n    let catalog: Catalog\n}\n\nstruct Meta2: Codable {\n    let color: String\n    let size: String\n    let available: Bool\n}\n\nstruct Member2: Codable {\n    let name: String\n    let age: Int\n    let admin: Bool\n}\n\nenum JSONValue: Codable {\n    case string(String), number(Double), bool(Bool), null, array([JSONValue]), object([String: JSONValue])\n    init(from decoder: Decoder) throws {\n        let container = try decoder.singleValueContainer()\n        if let value = try? container.decode(String.self) { self = .string(value) }\n        else if let value = try? container.decode(Double.self) { self = .number(value) }\n        else if let value = try? container.decode(Bool.self) { self = .bool(value) }\n        else if container.decodeNil() { self = .null }\n        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }\n        else { self = .object(try container.decode([String: JSONValue].self)) }\n    }\n    func encode(to encoder: Encoder) throws {\n        var container = encoder.singleValueContainer()\n        switch self {\n        case .string(let value): try container.encode(value)\n        case .number(let value): try container.encode(value)\n        case .bool(let value): try container.encode(value)\n        case .null: try container.encodeNil()\n        case .array(let value): try container.encode(value)\n        case .object(let value): try container.encode(value)\n        }\n    }\n}",
+      "file": "SampleCatalog.swift",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "kotlin": {
+      "ext": "kt",
+      "code": "// Generated from sample catalog.json\n\ndata class Meta(\n    val color: String,\n    val available: Boolean\n)\n\ndata class Item(\n    val id: Long,\n    val sku: String,\n    val price: Double,\n    val meta: Meta,\n    val note: Any? = null\n)\n\ndata class Member(\n    val name: String,\n    val age: Long\n)\n\ndata class Group(\n    val name: String,\n    val members: List<Member>,\n    val extra: Boolean? = null\n)\n\ndata class Catalog(\n    val id: String,\n    val title: String,\n    val active: Boolean,\n    val count: Long,\n    val score: Double,\n    val owner: Any? = null,\n    val tags: List<String>,\n    val items: List<Item>,\n    val groups: List<Group>\n)\n\ndata class SampleCatalog(\n    val catalog: Catalog\n)\n\ndata class Meta2(\n    val color: String,\n    val size: String,\n    val available: Boolean\n)\n\ndata class Member2(\n    val name: String,\n    val age: Long,\n    val admin: Boolean\n)",
+      "file": "SampleCatalog.kt",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "python": {
+      "ext": "py",
+      "code": "# Generated from sample catalog.json\nfrom dataclasses import dataclass\nfrom typing import Any, List, Optional, Union\n\n@dataclass\nclass Meta:\n    color: str\n    available: bool\n\n@dataclass\nclass Item:\n    id: int\n    sku: str\n    price: float\n    meta: Meta\n    note: Optional[Any] = None\n\n@dataclass\nclass Member:\n    name: str\n    age: int\n\n@dataclass\nclass Group:\n    name: str\n    members: List[Member]\n    extra: Optional[bool] = None\n\n@dataclass\nclass Catalog:\n    id: str\n    title: str\n    active: bool\n    count: int\n    score: float\n    tags: List[str]\n    items: List[Item]\n    groups: List[Group]\n    owner: Optional[Any] = None\n\n@dataclass\nclass SampleCatalog:\n    catalog: Catalog\n\n@dataclass\nclass Meta2:\n    color: str\n    size: str\n    available: bool\n\n@dataclass\nclass Member2:\n    name: str\n    age: int\n    admin: bool",
+      "file": "samplecatalog.py",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "php": {
+      "ext": "php",
+      "code": "<?php\n// Generated from sample catalog.json\n\nclass Meta\n{\n    public string $color;\n    public bool $available;\n}\n\nclass Item\n{\n    public int $id;\n    public string $sku;\n    public float $price;\n    public Meta $meta;\n    public mixed $note = null;\n}\n\nclass Member\n{\n    public string $name;\n    public int $age;\n}\n\nclass Group\n{\n    public string $name;\n    public array $members;\n    public ?bool $extra = null;\n}\n\nclass Catalog\n{\n    public string $id;\n    public string $title;\n    public bool $active;\n    public int $count;\n    public float $score;\n    public mixed $owner = null;\n    public array $tags;\n    public array $items;\n    public array $groups;\n}\n\nclass SampleCatalog\n{\n    public Catalog $catalog;\n}\n\nclass Meta2\n{\n    public string $color;\n    public string $size;\n    public bool $available;\n}\n\nclass Member2\n{\n    public string $name;\n    public int $age;\n    public bool $admin;\n}",
+      "file": "samplecatalog.php",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "dart": {
+      "ext": "dart",
+      "code": "// Generated from sample catalog.json\n\nclass Meta {\n  String color;\n  bool available;\n\n  Meta({\n    required this.color,\n    required this.available,\n  });\n}\n\nclass Item {\n  int id;\n  String sku;\n  double price;\n  Meta meta;\n  dynamic note;\n\n  Item({\n    required this.id,\n    required this.sku,\n    required this.price,\n    required this.meta,\n    this.note,\n  });\n}\n\nclass Member {\n  String name;\n  int age;\n\n  Member({\n    required this.name,\n    required this.age,\n  });\n}\n\nclass Group {\n  String name;\n  List<Member> members;\n  bool? extra;\n\n  Group({\n    required this.name,\n    required this.members,\n    this.extra,\n  });\n}\n\nclass Catalog {\n  String id;\n  String title;\n  bool active;\n  int count;\n  double score;\n  dynamic owner;\n  List<String> tags;\n  List<Item> items;\n  List<Group> groups;\n\n  Catalog({\n    required this.id,\n    required this.title,\n    required this.active,\n    required this.count,\n    required this.score,\n    this.owner,\n    required this.tags,\n    required this.items,\n    required this.groups,\n  });\n}\n\nclass SampleCatalog {\n  Catalog catalog;\n\n  SampleCatalog({\n    required this.catalog,\n  });\n}\n\nclass Meta2 {\n  String color;\n  String size;\n  bool available;\n\n  Meta2({\n    required this.color,\n    required this.size,\n    required this.available,\n  });\n}\n\nclass Member2 {\n  String name;\n  int age;\n  bool admin;\n\n  Member2({\n    required this.name,\n    required this.age,\n    required this.admin,\n  });\n}",
+      "file": "samplecatalog.dart",
+      "root": "SampleCatalog · catalog: Catalog"
+    },
+    "schema": {
+      "ext": "json",
+      "code": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"SampleCatalog\",\n  \"description\": \"Generated from sample catalog.json\",\n  \"$ref\": \"#/$defs/SampleCatalog\",\n  \"$defs\": {\n    \"Meta\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"color\": {\n          \"type\": \"string\"\n        },\n        \"available\": {\n          \"type\": \"boolean\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"color\",\n        \"available\"\n      ]\n    },\n    \"Item\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"id\": {\n          \"type\": \"integer\"\n        },\n        \"sku\": {\n          \"type\": \"string\"\n        },\n        \"price\": {\n          \"type\": \"number\"\n        },\n        \"meta\": {\n          \"$ref\": \"#/$defs/Meta\"\n        },\n        \"note\": {\n          \"anyOf\": [\n            {},\n            {\n              \"type\": \"null\"\n            }\n          ]\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"id\",\n        \"sku\",\n        \"price\",\n        \"meta\"\n      ]\n    },\n    \"Member\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"name\": {\n          \"type\": \"string\"\n        },\n        \"age\": {\n          \"type\": \"integer\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"name\",\n        \"age\"\n      ]\n    },\n    \"Group\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"name\": {\n          \"type\": \"string\"\n        },\n        \"members\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"$ref\": \"#/$defs/Member\"\n          }\n        },\n        \"extra\": {\n          \"type\": \"boolean\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"name\",\n        \"members\"\n      ]\n    },\n    \"Catalog\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"id\": {\n          \"type\": \"string\"\n        },\n        \"title\": {\n          \"type\": \"string\"\n        },\n        \"active\": {\n          \"type\": \"boolean\"\n        },\n        \"count\": {\n          \"type\": \"integer\"\n        },\n        \"score\": {\n          \"type\": \"number\"\n        },\n        \"owner\": {\n          \"anyOf\": [\n            {},\n            {\n              \"type\": \"null\"\n            }\n          ]\n        },\n        \"tags\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"string\"\n          }\n        },\n        \"items\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"$ref\": \"#/$defs/Item\"\n          }\n        },\n        \"groups\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"$ref\": \"#/$defs/Group\"\n          }\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"id\",\n        \"title\",\n        \"active\",\n        \"count\",\n        \"score\",\n        \"owner\",\n        \"tags\",\n        \"items\",\n        \"groups\"\n      ]\n    },\n    \"SampleCatalog\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"catalog\": {\n          \"$ref\": \"#/$defs/Catalog\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"catalog\"\n      ]\n    },\n    \"Meta2\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"color\": {\n          \"type\": \"string\"\n        },\n        \"size\": {\n          \"type\": \"string\"\n        },\n        \"available\": {\n          \"type\": \"boolean\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"color\",\n        \"size\",\n        \"available\"\n      ]\n    },\n    \"Member2\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"name\": {\n          \"type\": \"string\"\n        },\n        \"age\": {\n          \"type\": \"integer\"\n        },\n        \"admin\": {\n          \"type\": \"boolean\"\n        }\n      },\n      \"additionalProperties\": false,\n      \"required\": [\n        \"name\",\n        \"age\",\n        \"admin\"\n      ]\n    }\n  }\n}",
+      "file": "samplecatalog.schema.json",
+      "root": "SampleCatalog · catalog: Catalog"
+    }
+  }
+}

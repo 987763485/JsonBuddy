@@ -562,6 +562,7 @@ let syncing = false;
 let chromeTimer: number | null = null;
 let buddyTrackedDoc: BridgeDoc | null = null;
 let buddyDocumentVersion = 0;
+let codegenRevision = 0;
 let buddySavedVersion = 0;
 let buddyAutosaveTimer: number | null = null;
 let buddyAutosaveFailedPath = "";
@@ -729,6 +730,7 @@ const BUDDY_TOAST_ZH: Record<string, string> = {
   "Could not save audit settings": "无法保存审计设置",
   "Could not acknowledge audit event": "无法确认审计事件",
   "Could not save generated code": "无法保存生成的代码",
+  "Could not generate code": "无法生成代码",
   "Nothing to export": "没有可导出内容",
   "No tabular data found.": "未找到表格数据。",
   "Could not export CSV": "无法导出 CSV",
@@ -820,6 +822,7 @@ function ensureEditor(): EditorView | null {
             }
             if (!update.docChanged) return;
             editorDocumentText = update.state.doc.toString();
+            codegenRevision += 1;
             const active = currentDoc();
             if (!active) return;
             active.text = editorDocumentText;
@@ -858,6 +861,7 @@ function syncEditor(force = false): void {
   const next = doc?.text ?? "";
   const current = editorDocumentText;
   const documentChanged = doc !== buddyTrackedDoc;
+  if (documentChanged || current !== next) codegenRevision += 1;
   if (documentChanged) {
     flushPreviousDocument(doc);
     clearDocumentAutosaveTimer();
@@ -3314,7 +3318,7 @@ function installTreeView(): void {
     else if (view === "graph") renderGraphData();
     else if (view === "code") {
       try {
-        renderGeneratedCode(evalGlobal<string>("currentLang"));
+        void renderGeneratedCode(evalGlobal<string>("currentLang"));
       } catch {
         // The code panel may not be mounted.
       }
@@ -4315,41 +4319,6 @@ function installGraphData(): void {
    JSON-driven code generation
    ------------------------------------------------------------ */
 
-type CgKind =
-  | "string"
-  | "number"
-  | "integer"
-  | "boolean"
-  | "unknown"
-  | "null"
-  | "array"
-  | "object"
-  | "union";
-
-interface CgField {
-  key: string;
-  type: CgType;
-  required: boolean;
-}
-
-interface CgObject {
-  name: string;
-  fields: CgField[];
-}
-
-interface CgType {
-  kind: CgKind;
-  item?: CgType;
-  object?: CgObject;
-  types?: CgType[];
-  nullable?: boolean;
-}
-
-interface CgContext {
-  objects: CgObject[];
-  names: Set<string>;
-}
-
 interface GeneratedCode {
   code: string;
   file: string;
@@ -4360,963 +4329,20 @@ interface GeneratedCode {
 }
 
 let buddyGenerated: GeneratedCode | null = null;
+let buddyGeneratedLang = "";
+let buddyGeneratedKey = "";
 let codegenInstalled = false;
 let codegenTimer: number | null = null;
+let codegenRequest = 0;
+let codegenPending: { key: string; request: number } | null = null;
 
-function cgWords(value: string): string[] {
-  return String(value)
-    .replace(/[^A-Za-z0-9]+/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
+function codegenKeyFor(lang: string, doc: BridgeDoc | null): string {
+  return `${lang}\u0000${doc?.path ?? ""}\u0000${doc?.name ?? ""}\u0000${
+    doc?.text.length ?? 0
+  }\u0000${codegenRevision}`;
 }
 
-function cgPascal(value: string): string {
-  const words = cgWords(value);
-  return (
-    words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join("") ||
-    "Nested"
-  );
-}
-
-function cgCamel(value: string): string {
-  const pascal = cgPascal(value);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
-}
-
-function cgSnake(value: string): string {
-  return cgWords(value)
-    .map((word, index) =>
-      index === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-    )
-    .join("_");
-}
-
-function cgKebab(value: string): string {
-  return cgWords(value)
-    .map((word) => word.toLowerCase())
-    .join("-");
-}
-
-function cgSingular(value: string): string {
-  const lower = value.toLowerCase();
-  const irregular: Record<string, string> = {
-    movies: "movie",
-    cookies: "cookie",
-    zombies: "zombie",
-    ties: "tie",
-    pies: "pie",
-    lies: "lie",
-    series: "series",
-    species: "species"
-  };
-  if (irregular[lower]) {
-    const base = irregular[lower];
-    return value.charAt(0).toUpperCase() + base.slice(1);
-  }
-  if (/ies$/i.test(value)) return `${value.slice(0, -3)}y`;
-  if (/(ss|x|ch|sh)$/i.test(value)) return value;
-  if (/s$/i.test(value)) return value.slice(0, -1);
-  return value;
-}
-
-function cgUnique(ctx: CgContext, base: string): string {
-  let candidate = base || "Nested";
-  let index = 2;
-  while (ctx.names.has(candidate)) {
-    candidate = `${base}${index}`;
-    index += 1;
-  }
-  ctx.names.add(candidate);
-  return candidate;
-}
-
-function cgCloneType(type: CgType): CgType {
-  return {
-    kind: type.kind,
-    nullable: type.nullable,
-    item: type.item ? cgCloneType(type.item) : undefined,
-    object: type.object
-      ? {
-          name: type.object.name,
-          fields: type.object.fields.map((field) => ({
-            key: field.key,
-            required: field.required,
-            type: cgCloneType(field.type)
-          }))
-        }
-      : undefined,
-    types: type.types?.map(cgCloneType)
-  };
-}
-
-function cgMergeSchemas(target: CgObject, source: CgObject, ctx: CgContext): void {
-  const sourceKeys = new Set(source.fields.map((field) => field.key));
-  for (const field of target.fields) {
-    if (!sourceKeys.has(field.key)) field.required = false;
-  }
-  const first = target.fields.length === 0;
-  for (const field of source.fields) {
-    const existing = target.fields.find((item) => item.key === field.key);
-    if (existing) {
-      existing.required = existing.required && field.required;
-      existing.type = cgMerge(existing.type, field.type, ctx);
-    } else {
-      target.fields.push({
-        key: field.key,
-        required: first ? field.required : false,
-        type: cgCloneType(field.type)
-      });
-    }
-  }
-}
-
-function cgMergeUnion(left: CgType, right: CgType): CgType {
-  const types = [...(left.types ?? []), ...(right.kind === "union" ? right.types ?? [] : [right])];
-  const merged: CgType[] = [];
-  for (const item of types) {
-    const existing = merged.find(
-      (candidate) =>
-        candidate.kind === item.kind &&
-        (candidate.kind !== "object" || candidate.object?.name === item.object?.name)
-    );
-    if (!existing) merged.push(cgCloneType(item));
-    else {
-      existing.nullable = existing.nullable || item.nullable;
-      if (existing.kind === "array" && existing.item && item.item) {
-        existing.item = cgMerge(existing.item, item.item, {
-          objects: [],
-          names: new Set()
-        });
-      }
-    }
-  }
-  return { kind: "union", types: merged, nullable: left.nullable || right.nullable };
-}
-
-function cgMerge(left: CgType, right: CgType, ctx: CgContext): CgType {
-  if (left.kind === "null") {
-    const clone = cgCloneType(right);
-    clone.nullable = true;
-    return clone;
-  }
-  if (right.kind === "null") {
-    const clone = cgCloneType(left);
-    clone.nullable = true;
-    return clone;
-  }
-  if (left.kind === "unknown") {
-    const clone = cgCloneType(right);
-    clone.nullable = clone.nullable || left.nullable;
-    return clone;
-  }
-  if (right.kind === "unknown") {
-    const clone = cgCloneType(left);
-    clone.nullable = clone.nullable || right.nullable;
-    return clone;
-  }
-  if (left.kind === "union") return cgMergeUnion(left, right);
-  if (right.kind === "union") return cgMergeUnion(right, left);
-  if (
-    (left.kind === "number" || left.kind === "integer") &&
-    (right.kind === "number" || right.kind === "integer")
-  ) {
-    if (left.kind === "integer" && right.kind === "integer") {
-      return { kind: "integer", nullable: left.nullable || right.nullable };
-    }
-    return { kind: "number", nullable: left.nullable || right.nullable };
-  }
-  if (left.kind === right.kind) {
-    if (left.kind === "object" && left.object && right.object) {
-      cgMergeSchemas(left.object, right.object, ctx);
-      left.nullable = left.nullable || right.nullable;
-      return left;
-    }
-    if (left.kind === "array" && left.item && right.item) {
-      left.item = cgMerge(left.item, right.item, ctx);
-      left.nullable = left.nullable || right.nullable;
-      return left;
-    }
-    left.nullable = left.nullable || right.nullable;
-    return left;
-  }
-  return { kind: "union", types: [left, right] };
-}
-
-function cgInfer(value: unknown, hint: string, ctx: CgContext): CgType {
-  if (value === null) return { kind: "unknown", nullable: true };
-  if (Array.isArray(value)) {
-    if (!value.length) return { kind: "array", item: { kind: "unknown" } };
-    if (value.every(isPlainObject)) {
-      const name = cgUnique(ctx, cgSingular(cgPascal(hint)));
-      const object: CgObject = { name, fields: [] };
-      ctx.objects.push(object);
-      for (const item of value) {
-        cgMergeSchemas(object, cgInferObjectSchema(item, ctx), ctx);
-      }
-      return { kind: "array", item: { kind: "object", object } };
-    }
-    let item = cgInfer(value[0], hint, ctx);
-    for (const entry of value.slice(1)) {
-      item = cgMerge(item, cgInfer(entry, hint, ctx), ctx);
-    }
-    return { kind: "array", item };
-  }
-  if (isPlainObject(value)) {
-    const name = cgUnique(ctx, cgPascal(hint));
-    const object: CgObject = { name, fields: [] };
-    ctx.objects.push(object);
-    cgMergeSchemas(object, cgInferObjectSchema(value, ctx), ctx);
-    return { kind: "object", object };
-  }
-  if (typeof value === "string") return { kind: "string" };
-  if (typeof value === "number") {
-    return { kind: Number.isInteger(value) ? "integer" : "number" };
-  }
-  if (typeof value === "boolean") return { kind: "boolean" };
-  return { kind: "unknown" };
-}
-
-function cgInferObjectSchema(
-  value: Record<string, unknown>,
-  ctx: CgContext
-): CgObject {
-  const object: CgObject = { name: "Nested", fields: [] };
-  for (const [key, item] of Object.entries(value)) {
-    object.fields.push({
-      key,
-      required: true,
-      type: cgInfer(item, key, ctx)
-    });
-  }
-  return object;
-}
-
-function cgOrderedObjects(ctx: CgContext): CgObject[] {
-  const byName = new Map(ctx.objects.map((object) => [object.name, object]));
-  const visited = new Set<string>();
-  const output: CgObject[] = [];
-  const collect = (type: CgType): string[] => {
-    const names: string[] = [];
-    if (type.kind === "object" && type.object) names.push(type.object.name);
-    if (type.kind === "array" && type.item) names.push(...collect(type.item));
-    if (type.kind === "union" && type.types) {
-      for (const item of type.types) names.push(...collect(item));
-    }
-    return names;
-  };
-  const visit = (name: string) => {
-    if (visited.has(name)) return;
-    const object = byName.get(name);
-    if (!object) return;
-    visited.add(name);
-    for (const field of object.fields) {
-      for (const dependency of collect(field.type)) visit(dependency);
-    }
-    output.push(object);
-  };
-  for (const object of ctx.objects) visit(object.name);
-  return output;
-}
-
-const CG_KEYWORDS = new Set([
-  "class",
-  "interface",
-  "struct",
-  "type",
-  "public",
-  "private",
-  "default",
-  "new",
-  "return",
-  "import",
-  "package",
-  "func",
-  "var",
-  "let",
-  "const",
-  "null",
-  "true",
-  "false",
-  "in",
-  "is",
-  "as",
-  "object",
-  "string",
-  "number"
-]);
-
-function cgIdentifier(value: string, style: "pascal" | "camel" | "snake"): string {
-  let name =
-    style === "pascal" ? cgPascal(value) : style === "camel" ? cgCamel(value) : cgSnake(value);
-  if (!name) name = "field";
-  if (/^[0-9]/.test(name)) name = `_${name}`;
-  if (CG_KEYWORDS.has(name.toLowerCase())) name = `${name}_`;
-  return name;
-}
-
-function cgTypeBase(type: CgType, lang: string, nullable = false): string {
-  const primitive = (names: {
-    string: string;
-    integer: string;
-    number: string;
-    boolean: string;
-    unknown: string;
-    null: string;
-  }) => {
-    switch (type.kind) {
-      case "string":
-        return names.string;
-      case "integer":
-        return names.integer;
-      case "number":
-        return names.number;
-      case "boolean":
-        return names.boolean;
-      case "unknown":
-        return names.unknown;
-      case "null":
-        return names.null;
-      default:
-        return "";
-    }
-  };
-  const prim = primitive(
-    lang === "typescript" || lang === "javascript"
-      ? { string: "string", integer: "number", number: "number", boolean: "boolean", unknown: "unknown", null: "null" }
-      : lang === "go"
-        ? { string: "string", integer: "int64", number: "float64", boolean: "bool", unknown: "interface{}", null: "interface{}" }
-        : lang === "rust"
-          ? { string: "String", integer: "i64", number: "f64", boolean: "bool", unknown: "serde_json::Value", null: "serde_json::Value" }
-          : lang === "python"
-            ? { string: "str", integer: "int", number: "float", boolean: "bool", unknown: "Any", null: "None" }
-            : lang === "java"
-              ? { string: "String", integer: "Long", number: "Double", boolean: "Boolean", unknown: "Object", null: "Object" }
-              : lang === "csharp"
-                ? { string: "string", integer: "long", number: "double", boolean: "bool", unknown: "object", null: "object" }
-                : lang === "swift"
-                  ? { string: "String", integer: "Int", number: "Double", boolean: "Bool", unknown: "JSONValue", null: "JSONValue" }
-                  : lang === "kotlin"
-                    ? { string: "String", integer: "Long", number: "Double", boolean: "Boolean", unknown: "Any", null: "Any" }
-                    : lang === "php"
-                      ? { string: "string", integer: "int", number: "float", boolean: "bool", unknown: "mixed", null: "mixed" }
-                      : { string: "String", integer: "int", number: "double", boolean: "bool", unknown: "dynamic", null: "dynamic" }
-  );
-  if (prim) {
-    if (!type.nullable && !nullable) return prim;
-    switch (lang) {
-      case "typescript":
-      case "javascript":
-        return `${prim} | null`;
-      case "go":
-        return prim === "interface{}" ? prim : `*${prim}`;
-      case "rust":
-        return `Option<${prim}>`;
-      case "python":
-        return `Optional[${prim}]`;
-      case "java":
-        return prim;
-      case "csharp":
-        return `${prim}?`;
-      case "swift":
-      case "kotlin":
-      case "php":
-        return prim === "mixed" ? prim : `?${prim}`;
-      case "dart":
-        return prim === "dynamic" ? prim : `${prim}?`;
-      default:
-        return prim;
-    }
-  }
-  if (type.kind === "object") return type.object?.name ?? "Nested";
-  if (type.kind === "array") {
-    const inside = type.item ? cgTypeBase(type.item, lang, false) : "unknown";
-    const wrapped =
-      lang === "go"
-        ? `[]${inside}`
-        : lang === "rust"
-          ? `Vec<${inside}>`
-          : lang === "python"
-            ? `List[${inside}]`
-            : lang === "java" || lang === "csharp" || lang === "kotlin"
-              ? `List<${inside}>`
-              : lang === "swift"
-                ? `[${inside}]`
-                : lang === "php"
-                  ? "array"
-                  : lang === "dart"
-                    ? `List<${inside}>`
-                    : `${inside.includes(" | ") ? `(${inside})` : inside}[]`;
-    if (!type.nullable && !nullable) return wrapped;
-    switch (lang) {
-      case "typescript":
-      case "javascript":
-        return `${wrapped} | null`;
-      case "go":
-        return `*${wrapped}`;
-      case "rust":
-        return `Option<${wrapped}>`;
-      case "python":
-        return `Optional[${wrapped}]`;
-      case "csharp":
-      case "swift":
-      case "kotlin":
-        return `${wrapped}?`;
-      case "php":
-        return `?${wrapped}`;
-      case "dart":
-        return `${wrapped}?`;
-      default:
-        return wrapped;
-    }
-  }
-  if (type.kind === "union") {
-    if (lang === "typescript" || lang === "javascript") {
-      return (type.types ?? []).map((item) => cgTypeBase(item, lang)).join(" | ");
-    }
-    if (lang === "python") {
-      return `Union[${(type.types ?? []).map((item) => cgTypeBase(item, lang)).join(", ")}]`;
-    }
-    if (lang === "rust") return "serde_json::Value";
-    if (lang === "go") return "interface{}";
-    if (lang === "swift") return "JSONValue";
-    if (lang === "kotlin") return "Any";
-    return "object";
-  }
-  return "unknown";
-}
-
-function cgTsType(type: CgType): string {
-  return cgTypeBase(type, "typescript");
-}
-
-function cgJsDocType(type: CgType): string {
-  const base = cgTypeBase(
-    { ...type, nullable: false },
-    "javascript"
-  );
-  return type.nullable ? `${base}|null` : base;
-}
-
-function cgObjectFields(
-  object: CgObject,
-  nameStyle: (key: string) => string
-): { field: CgField; name: string }[] {
-  const used = new Set<string>();
-  return object.fields.map((field) => {
-    let name = nameStyle(field.key);
-    let index = 2;
-    while (used.has(name)) {
-      name = `${nameStyle(field.key)}${index}`;
-      index += 1;
-    }
-    used.add(name);
-    return { field, name };
-  });
-}
-
-function generateTypeScript(
-  objects: CgObject[],
-  root: CgType,
-  rootName: string,
-  sourceName: string,
-  javascript: boolean
-): string {
-  if (javascript) {
-    const lines = [`// Generated from ${sourceName}`, ""];
-    for (const object of objects) {
-      lines.push("/**", ` * @typedef {Object} ${object.name}`);
-      for (const field of object.fields) {
-        const optional = field.required ? "" : "[";
-        const close = field.required ? "" : "]";
-        lines.push(
-          ` * @property {${cgJsDocType(field.type)}} ${optional}${field.key}${close}`
-        );
-      }
-      lines.push(" */", "");
-    }
-    if (root.kind !== "object" || root.object?.name !== rootName) {
-      lines.push(`/** @typedef {${cgJsDocType(root)}} ${rootName} */`, "");
-    }
-    lines.push("export {};");
-    return lines.join("\n");
-  }
-  const lines = [`// Generated from ${sourceName}`, ""];
-  for (const object of objects) {
-    lines.push(`export interface ${object.name} {`);
-    for (const field of cgObjectFields(object, (key) =>
-      /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
-    )) {
-      const optional = field.field.required ? "" : "?";
-      lines.push(`  ${field.name}${optional}: ${cgTsType(field.field.type)};`);
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`export type ${rootName} = ${cgTsType(root)};`);
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateGo(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [`// Generated from ${sourceName}`, "", "package models", ""];
-  for (const object of objects) {
-    lines.push(`type ${object.name} struct {`);
-    for (const field of cgObjectFields(object, (key) => cgIdentifier(key, "pascal"))) {
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "go");
-      const nullable = field.field.type.nullable;
-      const type = nullable && base !== "interface{}" ? `*${base}` : base;
-      const tag = `json:"${field.field.key}${field.field.required ? "" : ",omitempty"}"`;
-      lines.push(`\t${field.name} ${type} \`${tag}\``);
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`type ${rootName} = ${cgTypeBase(root, "go")}`, "");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateRust(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [
-    `// Generated from ${sourceName}`,
-    "",
-    "use serde::{Deserialize, Serialize};",
-    ""
-  ];
-  for (const object of objects) {
-    lines.push("#[derive(Clone, Debug, Serialize, Deserialize)]");
-    lines.push(`pub struct ${object.name} {`);
-    for (const field of cgObjectFields(object, (key) => cgIdentifier(key, "snake"))) {
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "rust");
-      const optional = !field.field.required;
-      const type =
-        field.field.type.nullable || optional ? `Option<${base}>` : base;
-      if (field.name !== field.field.key) {
-        lines.push(`    #[serde(rename = "${field.field.key}")]`);
-      }
-      if (optional) {
-        lines.push(`    #[serde(skip_serializing_if = "Option::is_none")]`);
-      }
-      lines.push(`    pub ${field.name}: ${type},`);
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`pub type ${rootName} = ${cgTypeBase(root, "rust")};`, "");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generatePython(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [
-    `# Generated from ${sourceName}`,
-    "from dataclasses import dataclass",
-    "from typing import Any, List, Optional, Union",
-    ""
-  ];
-  for (const object of objects) {
-    lines.push("@dataclass", `class ${object.name}:`);
-    const fields = cgObjectFields(object, (key) => cgIdentifier(key, "snake"));
-    const required = fields.filter(
-      (field) => field.field.required && !field.field.type.nullable
-    );
-    const optional = fields.filter(
-      (field) => !field.field.required || field.field.type.nullable
-    );
-    const rows = [...required, ...optional];
-    if (!rows.length) lines.push("    pass");
-    for (const field of rows) {
-      const isOptional = !field.field.required || field.field.type.nullable;
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "python");
-      lines.push(
-        `    ${field.name}: ${isOptional ? `Optional[${base}] = None` : base}`
-      );
-    }
-    lines.push("");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`${rootName} = ${cgTypeBase(root, "python")}`, "");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateJava(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [
-    `// Generated from ${sourceName}`,
-    "import java.util.ArrayList;",
-    "import java.util.List;",
-    "import java.util.Optional;",
-    ""
-  ];
-  for (const object of objects) {
-    lines.push(`class ${object.name} {`);
-    for (const field of cgObjectFields(object, (key) => cgIdentifier(key, "camel"))) {
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "java");
-      if (field.field.required) {
-        lines.push(`    public ${base} ${field.name};`);
-      } else {
-        lines.push(`    public Optional<${base}> ${field.name} = Optional.empty();`);
-      }
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    if (root.kind === "array" && root.item) {
-      lines.push(`class ${rootName} extends ArrayList<${cgTypeBase(root.item, "java")}> {`, "}");
-    } else {
-      lines.push(`class ${rootName} {`);
-      lines.push(`    public ${cgTypeBase(root, "java")} value;`);
-      lines.push("}");
-    }
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateCSharp(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [
-    `// Generated from ${sourceName}`,
-    "using System.Collections.Generic;",
-    ""
-  ];
-  for (const object of objects) {
-    lines.push(`public class ${object.name}`, "{");
-    for (const field of cgObjectFields(object, (key) => cgIdentifier(key, "pascal"))) {
-      const nullable = !field.field.required || field.field.type.nullable;
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "csharp");
-      lines.push(`    public ${base}${nullable ? "?" : ""} ${field.name} { get; set; }`);
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    if (root.kind === "array" && root.item) {
-      lines.push(
-        `public class ${rootName} : List<${cgTypeBase(root.item, "csharp")}> { }`
-      );
-    } else {
-      lines.push(`public class ${rootName}`, "{");
-      lines.push(`    public ${cgTypeBase(root, "csharp")} Value { get; set; }`);
-      lines.push("}");
-    }
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateSwift(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [`// Generated from ${sourceName}`, "import Foundation", ""];
-  let usesJSONValue = false;
-  const swiftType = (type: CgType, optional: boolean) => {
-    const base = cgTypeBase({ ...type, nullable: false }, "swift");
-    if (base === "JSONValue") usesJSONValue = true;
-    return type.nullable || optional ? `${base}?` : base;
-  };
-  for (const object of objects) {
-    lines.push(`struct ${object.name}: Codable {`);
-    const fields = cgObjectFields(object, (key) => cgIdentifier(key, "camel"));
-    for (const field of fields) {
-      lines.push(
-        `    let ${field.name}: ${swiftType(
-          field.field.type,
-          !field.field.required
-        )}`
-      );
-    }
-    const needsCodingKeys = fields.some((field) => field.name !== field.field.key);
-    if (needsCodingKeys) {
-      lines.push("", "    enum CodingKeys: String, CodingKey {");
-      for (const field of fields) {
-        lines.push(
-          `        case ${field.name} = "${field.field.key}"`
-        );
-      }
-      lines.push("    }");
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`typealias ${rootName} = ${cgTypeBase(root, "swift")}`, "");
-  }
-  if (usesJSONValue) {
-    lines.push(
-      "enum JSONValue: Codable {",
-      "    case string(String), number(Double), bool(Bool), null, array([JSONValue]), object([String: JSONValue])",
-      "    init(from decoder: Decoder) throws {",
-      "        let container = try decoder.singleValueContainer()",
-      "        if let value = try? container.decode(String.self) { self = .string(value) }",
-      "        else if let value = try? container.decode(Double.self) { self = .number(value) }",
-      "        else if let value = try? container.decode(Bool.self) { self = .bool(value) }",
-      "        else if container.decodeNil() { self = .null }",
-      "        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }",
-      "        else { self = .object(try container.decode([String: JSONValue].self)) }",
-      "    }",
-      "    func encode(to encoder: Encoder) throws {",
-      "        var container = encoder.singleValueContainer()",
-      "        switch self {",
-      "        case .string(let value): try container.encode(value)",
-      "        case .number(let value): try container.encode(value)",
-      "        case .bool(let value): try container.encode(value)",
-      "        case .null: try container.encodeNil()",
-      "        case .array(let value): try container.encode(value)",
-      "        case .object(let value): try container.encode(value)",
-      "        }",
-      "    }",
-      "}",
-      ""
-    );
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateKotlin(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [`// Generated from ${sourceName}`, ""];
-  for (const object of objects) {
-    const fields = cgObjectFields(object, (key) => cgIdentifier(key, "camel"));
-    if (!fields.length) {
-      lines.push(`class ${object.name}`, "");
-      continue;
-    }
-    lines.push(`data class ${object.name}(`);
-    fields.forEach((field, index) => {
-      const nullable = !field.field.required || field.field.type.nullable;
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "kotlin");
-      const suffix = nullable ? "? = null" : "";
-      lines.push(
-        `    val ${field.name}: ${base}${suffix}${index === fields.length - 1 ? "" : ","}`
-      );
-    });
-    lines.push(")", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`typealias ${rootName} = ${cgTypeBase(root, "kotlin")}`, "");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generatePhp(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [`<?php`, `// Generated from ${sourceName}`, ""];
-  for (const object of objects) {
-    lines.push(`class ${object.name}`, "{");
-    for (const field of cgObjectFields(object, (key) => cgIdentifier(key, "camel"))) {
-      const nullable = !field.field.required || field.field.type.nullable;
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "php");
-      const prefix = nullable && base !== "mixed" ? "?" : "";
-      lines.push(
-        `    public ${prefix}${base} $${field.name}${nullable ? " = null" : ""};`
-      );
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    if (root.kind === "array" && root.item) {
-      lines.push(
-        `/** @extends \\ArrayObject<int, ${cgTypeBase(root.item, "php")}> */`,
-        `class ${rootName} extends \\ArrayObject {}`
-      );
-    } else {
-      lines.push(`class ${rootName}`, "{");
-      lines.push(`    public ${cgTypeBase(root, "php")} $value;`);
-      lines.push("}");
-    }
-  }
-  return lines.join("\n").trimEnd();
-}
-
-function generateDart(objects: CgObject[], root: CgType, rootName: string, sourceName: string): string {
-  const lines = [`// Generated from ${sourceName}`, ""];
-  for (const object of objects) {
-    const fields = cgObjectFields(object, (key) => cgIdentifier(key, "camel"));
-    lines.push(`class ${object.name} {`);
-    for (const field of fields) {
-      const nullable = !field.field.required || field.field.type.nullable;
-      const base = cgTypeBase({ ...field.field.type, nullable: false }, "dart");
-      lines.push(`  ${base}${nullable && base !== "dynamic" ? "?" : ""} ${field.name};`);
-    }
-    if (fields.length) {
-      lines.push("", `  ${object.name}({`);
-      for (const field of fields) {
-        const required = field.field.required && !field.field.type.nullable;
-        lines.push(`    ${required ? "required " : ""}this.${field.name},`);
-      }
-      lines.push("  });");
-    }
-    lines.push("}", "");
-  }
-  if (root.kind !== "object" || root.object?.name !== rootName) {
-    lines.push(`typedef ${rootName} = ${cgTypeBase(root, "dart")};`, "");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-
-function generateJsonSchema(
-  objects: CgObject[],
-  root: CgType,
-  rootName: string,
-  sourceName: string
-): string {
-  const nullablePrimitive = (name: string, nullable?: boolean) =>
-    nullable ? { type: [name, "null"] } : { type: name };
-  const schemaFor = (type: CgType): Record<string, unknown> => {
-    const nullable = type.nullable === true;
-    const wrapNullable = (value: Record<string, unknown>) =>
-      nullable ? { anyOf: [value, { type: "null" }] } : value;
-    switch (type.kind) {
-      case "string":
-        return nullablePrimitive("string", nullable);
-      case "integer":
-        return nullablePrimitive("integer", nullable);
-      case "number":
-        return nullablePrimitive("number", nullable);
-      case "boolean":
-        return nullablePrimitive("boolean", nullable);
-      case "null":
-        return { type: "null" };
-      case "object":
-        return wrapNullable({ $ref: `#/$defs/${type.object?.name ?? "Nested"}` });
-      case "array":
-        return wrapNullable({
-          type: "array",
-          items: type.item ? schemaFor(type.item) : {}
-        });
-      case "union":
-        return wrapNullable({
-          anyOf: (type.types ?? []).map(schemaFor)
-        });
-      default:
-        return nullable ? { anyOf: [{}, { type: "null" }] } : {};
-    }
-  };
-  const defs: Record<string, unknown> = {};
-  for (const object of objects) {
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-    for (const field of object.fields) {
-      properties[field.key] = schemaFor(field.type);
-      if (field.required) required.push(field.key);
-    }
-    defs[object.name] = {
-      type: "object",
-      properties,
-      additionalProperties: false,
-      ...(required.length ? { required } : {})
-    };
-  }
-  if (!defs[rootName]) {
-    defs[rootName] = schemaFor(root);
-  }
-  const document = {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    title: rootName,
-    description: `Generated from ${sourceName}`,
-    $ref: `#/$defs/${rootName}`,
-    $defs: defs
-  };
-  return JSON.stringify(document, null, 2);
-}
-
-function cgFileFor(lang: string, rootName: string, ext: string): string {
-  if (lang === "schema") return `${cgKebab(rootName)}.schema.json`;
-  if (["java", "csharp", "swift", "kotlin"].includes(lang)) {
-    return `${rootName}.${ext}`;
-  }
-  const base = lang === "go" || lang === "rust" || lang === "python"
-    ? cgSnake(rootName)
-    : cgKebab(rootName);
-  return `${base}.${ext}`;
-}
-
-function cgRootSummary(root: CgType, rootName: string): string {
-  if (root.kind === "object" && root.object) {
-    const parts = root.object.fields
-      .slice(0, 3)
-      .map((field) => `${field.key}: ${cgTsType(field.type).replace(/ \| null/g, "")}`);
-    return [rootName, ...parts].join(" · ");
-  }
-  if (root.kind === "array" && root.item) {
-    return `${rootName} · ${cgTsType(root.item)}[]`;
-  }
-  return `${rootName} · ${cgTsType(root)}`;
-}
-
-function buildGeneratedCode(lang: string, def: any, doc: BridgeDoc | null): GeneratedCode {
-  const source = doc?.text ?? "";
-  if (!source.trim()) {
-    return {
-      code: "// Open a JSON document to generate types.",
-      file: `model.${def.ext}`,
-      rootName: "",
-      types: 0,
-      records: 0,
-      rootLabel: "No document"
-    };
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch {
-    return {
-      code: "// The document is not valid JSON. Fix the syntax to generate types.",
-      file: `model.${def.ext}`,
-      rootName: "",
-      types: 0,
-      records: 0,
-      rootLabel: "Invalid JSON"
-    };
-  }
-  const stem = (doc?.name ?? "root").replace(/\.[^.]+$/, "");
-  const rootName = cgPascal(stem) || "Root";
-  const ctx: CgContext = { objects: [], names: new Set() };
-  const root = cgInfer(value, rootName, ctx);
-  const objects = cgOrderedObjects(ctx);
-  const sourceName = doc?.name ?? "JSON";
-  const code =
-    lang === "javascript"
-      ? generateTypeScript(objects, root, rootName, sourceName, true)
-      : lang === "typescript"
-        ? generateTypeScript(objects, root, rootName, sourceName, false)
-        : lang === "go"
-          ? generateGo(objects, root, rootName, sourceName)
-          : lang === "rust"
-            ? generateRust(objects, root, rootName, sourceName)
-            : lang === "python"
-              ? generatePython(objects, root, rootName, sourceName)
-              : lang === "java"
-                ? generateJava(objects, root, rootName, sourceName)
-                : lang === "csharp"
-                  ? generateCSharp(objects, root, rootName, sourceName)
-                  : lang === "swift"
-                    ? generateSwift(objects, root, rootName, sourceName)
-                    : lang === "kotlin"
-                      ? generateKotlin(objects, root, rootName, sourceName)
-                      : lang === "php"
-                        ? generatePhp(objects, root, rootName, sourceName)
-                        : lang === "schema"
-                          ? generateJsonSchema(objects, root, rootName, sourceName)
-                          : generateDart(objects, root, rootName, sourceName);
-  const records = Array.isArray(value)
-    ? value.length
-    : isPlainObject(value)
-      ? Math.max(
-          1,
-          ...Object.values(value).map((item) => (Array.isArray(item) ? item.length : 0))
-        )
-      : 1;
-  return {
-    code,
-    file: cgFileFor(lang, rootName, def.ext),
-    rootName,
-    types: objects.length,
-    records,
-    rootLabel: cgRootSummary(root, rootName)
-  };
-}
-
-function renderGeneratedCode(langId: string): void {
-  const defs = evalGlobal<any[]>("LANG_DEFS");
-  const def = defs.find((item) => item.id === langId) ?? defs[1];
-  if (!def) return;
-  evalGlobal(`currentLang = ${JSON.stringify(def.id)}`);
-  buddyGenerated = buildGeneratedCode(def.id, def, currentDoc());
+function paintGeneratedCode(def: any, generated: GeneratedCode, doc: BridgeDoc | null): void {
   const badge = document.getElementById("langBadge");
   if (badge) {
     badge.textContent = def.badge;
@@ -5324,32 +4350,31 @@ function renderGeneratedCode(langId: string): void {
     badge.style.background = `${def.color}1f`;
   }
   w.setText("langName", def.name);
-  w.setText("cgFile", buddyGenerated.file);
+  w.setText("cgFile", generated.file);
   w.setText("cgLang", def.name);
-  w.setText("cgRoot", buddyGenerated.rootLabel);
+  w.setText("cgRoot", generated.rootLabel);
   const meta = document.querySelector(".codegen-meta");
   if (meta) {
-    const doc = currentDoc();
     meta.textContent = doc
-      ? `from ${doc.name} · ${buddyGenerated.records} record${
-          buddyGenerated.records === 1 ? "" : "s"
+      ? `from ${doc.name} · ${generated.records} record${
+          generated.records === 1 ? "" : "s"
         }`
       : viewLanguageIsZh()
         ? "无文档"
         : "No document";
   }
-  const rootName = buddyGenerated.rootName || "Model";
+  const rootName = generated.rootName || "Model";
   w.setText(
     "cgSummary",
     viewLanguageIsZh()
-      ? `${rootName} · ${buddyGenerated.types} 个类型 · ${buddyGenerated.records} 条记录`
-      : `${rootName} · ${buddyGenerated.types} type${
-          buddyGenerated.types === 1 ? "" : "s"
-        } · ${buddyGenerated.records} record${
-          buddyGenerated.records === 1 ? "" : "s"
+      ? `${rootName} · ${generated.types} 个类型 · ${generated.records} 条记录`
+      : `${rootName} · ${generated.types} type${
+          generated.types === 1 ? "" : "s"
+        } · ${generated.records} record${
+          generated.records === 1 ? "" : "s"
         }`
   );
-  const code = buddyGenerated.code.replace(/^\n+|\n+$/g, "");
+  const code = generated.code.replace(/^\n+|\n+$/g, "");
   const lines = code.split("\n");
   w.setText(
     "cgMeta",
@@ -5371,6 +4396,62 @@ function renderGeneratedCode(langId: string): void {
   });
 }
 
+async function renderGeneratedCode(langId: string): Promise<void> {
+  const defs = evalGlobal<any[]>("LANG_DEFS");
+  const def = defs.find((item) => item.id === langId) ?? defs[1];
+  if (!def) return;
+  evalGlobal(`currentLang = ${JSON.stringify(def.id)}`);
+  const doc = currentDoc();
+  const key = codegenKeyFor(def.id, doc);
+  if (buddyGenerated && buddyGeneratedKey === key) {
+    ++codegenRequest;
+    paintGeneratedCode(def, buddyGenerated, doc);
+    return;
+  }
+  if (codegenPending?.key === key) return;
+  const request = ++codegenRequest;
+  codegenPending = { key, request };
+  try {
+    const generated = await invoke<GeneratedCode>("generate_code", {
+      text: doc?.text ?? "",
+      language: def.id,
+      fileName: doc?.name ?? "root",
+      extension: def.ext
+    });
+    if (
+      request !== codegenRequest ||
+      codegenKeyFor(def.id, currentDoc()) !== key
+    ) {
+      return;
+    }
+    buddyGenerated = generated;
+    buddyGeneratedLang = def.id;
+    buddyGeneratedKey = key;
+    paintGeneratedCode(def, generated, doc);
+  } catch (error) {
+    if (
+      request !== codegenRequest ||
+      codegenKeyFor(def.id, currentDoc()) !== key
+    ) {
+      return;
+    }
+    buddyGenerated = {
+      code: "// Could not generate code from this document.",
+      file: `model.${def.ext}`,
+      rootName: "",
+      types: 0,
+      records: 0,
+      rootLabel: "Code generation failed"
+    };
+    buddyGeneratedLang = def.id;
+    buddyGeneratedKey = "";
+    paintGeneratedCode(def, buddyGenerated, doc);
+    toast("Could not generate code", String(error));
+  } finally {
+    if (codegenPending?.request === request) codegenPending = null;
+  }
+}
+
 function scheduleCodegenRender(delay = 180): void {
   if (!codegenInstalled) return;
   if (codegenTimer !== null) window.clearTimeout(codegenTimer);
@@ -5378,7 +4459,7 @@ function scheduleCodegenRender(delay = 180): void {
     codegenTimer = null;
     try {
       if (evalGlobal<string>("app.dataset.view") === "code") {
-        renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
+        void renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
       }
     } catch {
       // The app may be closing.
@@ -5389,13 +4470,15 @@ function scheduleCodegenRender(delay = 180): void {
 function installCodegen(): void {
   if (codegenInstalled) return;
   codegenInstalled = true;
-  w.renderCodegen = (id: string) => renderGeneratedCode(id);
+  w.renderCodegen = (id: string) => {
+    void renderGeneratedCode(id);
+  };
   w.copyGenerated = () => {
-    if (!buddyGenerated) return;
+    if (!buddyGenerated || buddyGeneratedLang !== evalGlobal<string>("currentLang")) return;
     w.copyText(buddyGenerated.code, w.t("Copied"), buddyGenerated.file);
   };
   w.downloadGenerated = async () => {
-    if (!buddyGenerated) return;
+    if (!buddyGenerated || buddyGeneratedLang !== evalGlobal<string>("currentLang")) return;
     const defs = evalGlobal<any[]>("LANG_DEFS");
     const def = defs.find(
       (item) => item.id === evalGlobal<string>("currentLang")
@@ -5416,10 +4499,16 @@ function installCodegen(): void {
   w.setView = (view: string) => {
     originalSetView(view);
     if (view === "code") {
-      renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
+      void renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
     }
   };
-  renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
+  try {
+    if (evalGlobal<string>("app.dataset.view") === "code") {
+      void renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
+    }
+  } catch {
+    // The code panel is not mounted yet.
+  }
 }
 
 
