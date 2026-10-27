@@ -4063,6 +4063,160 @@ function installCodegen(): void {
   renderGeneratedCode(evalGlobal<string>("currentLang") || "typescript");
 }
 
+
+/* ------------------------------------------------------------
+   Import and export
+   ------------------------------------------------------------ */
+
+async function nativeSaveText(
+  defaultPath: string,
+  text: string,
+  filters: { name: string; extensions: string[] }[]
+): Promise<boolean> {
+  const path = await save({ defaultPath, filters });
+  if (typeof path !== "string") return false;
+  await invoke("save_text_file", { path, text });
+  toast("File exported", path);
+  return true;
+}
+
+function csvCell(value: unknown): string {
+  const text = value == null ? "" : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function patchImportExport(): void {
+  w.exportCurrentCsv = async () => {
+    w.closeEditorMore?.();
+    const rows = w.currentExportRows?.() ?? [];
+    if (!rows.length) {
+      toast("Nothing to export", "No tabular data found.");
+      return;
+    }
+    const headers: string[] = [
+      ...new Set(
+        (rows as Record<string, unknown>[]).flatMap((row) => Object.keys(row))
+      )
+    ];
+    const lines = [
+      headers.map(csvCell).join(","),
+      ...rows.map((row: Record<string, unknown>) =>
+        headers.map((header) => csvCell(row[header])).join(",")
+      )
+    ];
+    const name = (currentDoc()?.name ?? "data").replace(/\.json$/i, "") + ".csv";
+    try {
+      await nativeSaveText(name, `${lines.join("\n")}\n`, [
+        { name: "CSV", extensions: ["csv"] }
+      ]);
+    } catch (error) {
+      toast("Could not export CSV", String(error));
+    }
+  };
+
+  w.exportCurrentExcel = async () => {
+    w.closeEditorMore?.();
+    const rows = w.currentExportRows?.() ?? [];
+    if (!rows.length) {
+      toast("Nothing to export", "No tabular data found.");
+      return;
+    }
+    const headers: string[] = [
+      ...new Set(
+        (rows as Record<string, unknown>[]).flatMap((row) => Object.keys(row))
+      )
+    ];
+    const head = `<tr>${headers.map((header) => `<th>${w.escHtml(header)}</th>`).join("")}</tr>`;
+    const body = rows
+      .map(
+        (row: Record<string, unknown>) =>
+          `<tr>${headers
+            .map((header) => `<td>${w.escHtml(row[header] == null ? "" : String(row[header]))}</td>`)
+            .join("")}</tr>`
+      )
+      .join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><table>${head}${body}</table></body></html>`;
+    const name = (currentDoc()?.name ?? "data").replace(/\.json$/i, "") + ".xls";
+    try {
+      await nativeSaveText(name, html, [
+        { name: "Excel", extensions: ["xls"] }
+      ]);
+    } catch (error) {
+      toast("Could not export Excel", String(error));
+    }
+  };
+
+  w.downloadMockExport = async () => {
+    const file = document.getElementById("mockExportFile")?.textContent ?? "export.json";
+    const text = document.getElementById("mockExportCode")?.textContent ?? "";
+    if (!text) return;
+    try {
+      const saved = await nativeSaveText(file, text, [
+        {
+          name: file.endsWith(".yaml") ? "OpenAPI YAML" : "JSON Schema",
+          extensions: [file.split(".").pop() ?? "json"]
+        }
+      ]);
+      if (saved) w.closeMockExport?.();
+    } catch (error) {
+      toast("Could not export mock API", String(error));
+    }
+  };
+
+  w.confirmImport = async () => {
+    const state = evalGlobal<{ format: string; file: File | null }>("importState");
+    const file = state?.file;
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      toast("File is too large", "Maximum import size is 50 MB.");
+      return;
+    }
+    try {
+      const text = await file.text();
+      let data: unknown;
+      let name = file.name;
+      if (state.format === "csv") {
+        data = w.csvToJson(text);
+        if (!Array.isArray(data) || !data.length) {
+          throw new Error("The file has no data rows.");
+        }
+        name = (file.name.replace(/\.csv$/i, "") || "imported") + ".json";
+      } else if (state.format === "jsonl") {
+        data = text
+          .split(/\r?\n/)
+          .filter((line) => line.trim())
+          .map((line) => JSON.parse(line));
+        if (!Array.isArray(data) || !data.length) {
+          throw new Error("The file has no JSON lines.");
+        }
+        name = (file.name.replace(/\.(jsonl|zstd|zst)$/i, "") || "imported") + ".json";
+      } else {
+        data = JSON.parse(text);
+      }
+      const pretty = `${JSON.stringify(data, null, 2)}\n`;
+      const replace = document
+        .getElementById("importReplaceCheck")
+        ?.classList.contains("on");
+      const created = await invoke<JsonDocument>("create_json_document", { name });
+      const saved = await invoke<JsonDocument>("save_json_document", {
+        path: created.path,
+        text: pretty
+      });
+      w.closeImport?.();
+      if (replace) {
+        installDocument(saved);
+      } else {
+        seedRecents(await invoke<RecentDocument[]>("list_recent_documents"));
+        w.renderJsonRecents?.();
+        w.renderFileMenuJsonRecents?.();
+      }
+      toast("Imported file", saved.name);
+    } catch (error) {
+      toast("Could not import file", String(error));
+    }
+  };
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -5111,6 +5265,7 @@ async function bootstrap(): Promise<void> {
     installTableData();
     installGraphData();
     installCodegen();
+    patchImportExport();
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
