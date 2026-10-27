@@ -2997,6 +2997,7 @@ interface TrajectoryTimelineSpan {
 interface TrajectoryTimelineModel {
   mode: "sequence" | "duration";
   spans: TrajectoryTimelineSpan[];
+  minimumWindow: number;
 }
 
 const TRAJECTORY_ROW_HEIGHT = 46;
@@ -3008,6 +3009,7 @@ let trajectoryAllEntries: TrajectoryEntry[] = [];
 let trajectoryVisibleEntries: TrajectoryEntry[] = [];
 let trajectoryDisplayRows: TrajectoryDisplayRow[] = [];
 let trajectoryTimelineModel: TrajectoryTimelineModel | null = null;
+let trajectoryViewport: { start: number; end: number } | null = null;
 let trajectoryActualDuration = (() => {
   try {
     return localStorage.getItem(TRAJECTORY_DURATION_STORAGE) === "1";
@@ -3034,6 +3036,7 @@ let trajectoryDrag:
     }
   | null = null;
 let trajectoryRenderTimer: number | null = null;
+let trajectoryTimelineFrame: number | null = null;
 let trajectoryPaintFrame: number | null = null;
 let trajectoryResetScroll = false;
 let trajectoryStreamPath: string | null = null;
@@ -3981,7 +3984,8 @@ function trajectorySequenceTimeline(entries: TrajectoryEntry[]): TrajectoryTimel
       entry,
       left: entry.index / total,
       width: 1 / total
-    }))
+    })),
+    minimumWindow: Math.min(1, 1 / total)
   };
 }
 
@@ -4039,12 +4043,55 @@ function trajectoryBuildTimelineModel(entries: TrajectoryEntry[]): TrajectoryTim
       width: Math.max(0, (span.end - span.start) / domain)
     };
   });
-  return { mode: "duration", spans };
+  return {
+    mode: "duration",
+    spans,
+    minimumWindow: Math.min(1, 20 / domain)
+  };
+}
+
+function trajectoryTimelineView(): { start: number; end: number } {
+  const view = trajectoryViewport;
+  if (!view || !(view.end > view.start)) return { start: 0, end: 1 };
+  return {
+    start: Math.max(0, view.start),
+    end: Math.min(1, view.end)
+  };
+}
+
+function trajectoryViewFraction(fraction: number): number {
+  const view = trajectoryTimelineView();
+  const value = Math.max(0, Math.min(1, fraction));
+  return view.start + value * (view.end - view.start);
+}
+
+function clampTrajectoryViewport(): void {
+  if (!trajectoryViewport) return;
+  const minimum = Math.max(0.0001, Math.min(1, trajectoryTimelineModel?.minimumWindow ?? 0.01));
+  const size = Math.max(minimum, Math.min(1, trajectoryViewport.end - trajectoryViewport.start));
+  if (size >= 0.999) {
+    trajectoryViewport = null;
+    return;
+  }
+  const start = Math.max(0, Math.min(1 - size, trajectoryViewport.start));
+  trajectoryViewport = { start, end: start + size };
 }
 
 function trajectoryTimelineHtml(): string {
   const model = trajectoryTimelineModel;
-  const spans = model?.spans ?? [];
+  const view = trajectoryTimelineView();
+  const viewSize = Math.max(0.000001, view.end - view.start);
+  const spans = (model?.spans ?? [])
+    .filter(
+      (span) =>
+        span.left + span.width >= view.start - 1e-9 &&
+        span.left <= view.end + 1e-9
+    )
+    .map((span) => ({
+      ...span,
+      left: (span.left - view.start) / viewSize,
+      width: span.width / viewSize
+    }));
   const queryInput = document.getElementById("monitorFilter") as HTMLInputElement | null;
   const query = String(queryInput?.value ?? "").trim().toLowerCase();
   const spanHtml = (span: TrajectoryTimelineSpan) => {
@@ -4196,7 +4243,7 @@ function updateTrajectoryTimelineFocus(): void {
       !!query && !!entry && !trajectoryEntryMatches(entry, query)
     );
   });
-  const selection = draft
+  const fullSelection = draft
     ? {
         start: Math.min(draft.startFraction, draft.endFraction),
         end: Math.max(draft.startFraction, draft.endFraction)
@@ -4220,6 +4267,14 @@ function updateTrajectoryTimelineFocus(): void {
           };
         })()
       : null;
+  const view = trajectoryTimelineView();
+  const viewSize = Math.max(0.000001, view.end - view.start);
+  const selection = fullSelection
+    ? {
+        start: (fullSelection.start - view.start) / viewSize,
+        end: (fullSelection.end - view.start) / viewSize
+      }
+    : null;
   document.querySelectorAll<HTMLElement>(".trajectory-range").forEach((bar) => {
     if (!selection) {
       bar.hidden = true;
@@ -4230,6 +4285,49 @@ function updateTrajectoryTimelineFocus(): void {
     bar.style.width = `${Math.max(0.2, (selection.end - selection.start) * 100)}%`;
     bar.dataset.dragging = draft ? "true" : "false";
   });
+}
+
+function renderTrajectoryTimeline(): void {
+  const timeline = document.getElementById("trajectoryTimeline");
+  if (!timeline) return;
+  timeline.dataset.timelineMode = trajectoryTimelineModel?.mode ?? "sequence";
+  timeline.dataset.timelineZoom = trajectoryViewport ? "custom" : "full";
+  timeline.innerHTML = trajectoryAllEntries.length
+    ? trajectoryTimelineHtml()
+    : `<div class="trajectory-empty" style="position:static;padding:0">${trajectoryText(
+        "No trajectory events",
+        "没有轨迹事件"
+      )}</div>`;
+  updateTrajectoryTimelineFocus();
+}
+
+function scheduleTrajectoryTimelineRender(): void {
+  if (trajectoryTimelineFrame !== null) return;
+  trajectoryTimelineFrame = window.requestAnimationFrame(() => {
+    trajectoryTimelineFrame = null;
+    renderTrajectoryTimeline();
+  });
+}
+
+function trajectoryZoomTimeline(clientX: number, deltaY: number): boolean {
+  const model = trajectoryTimelineModel;
+  const track = document.querySelector<HTMLElement>("#trajectoryTimeline .trajectory-track");
+  if (!model || !track || !trajectoryAllEntries.length) return false;
+  const rect = track.getBoundingClientRect();
+  if (!(rect.width > 0)) return false;
+  const local = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  const view = trajectoryTimelineView();
+  const size = view.end - view.start;
+  const minimum = Math.max(0.0001, Math.min(1, model.minimumWindow));
+  const next = Math.max(minimum, Math.min(1, size * Math.exp(deltaY * 0.0015)));
+  if (next >= 0.999) {
+    trajectoryViewport = null;
+    return true;
+  }
+  const anchor = view.start + local * size;
+  const start = Math.max(0, Math.min(1 - next, anchor - local * next));
+  trajectoryViewport = { start, end: start + next };
+  return true;
 }
 
 function hideTrajectoryTip(): void {
@@ -4583,6 +4681,7 @@ function renderTrajectory(): void {
     trajectoryRange = null;
     trajectoryDraft = null;
     trajectoryDrag = null;
+    trajectoryViewport = null;
     trajectoryCollapsedTurns.clear();
     trajectoryCollapsedAssistants.clear();
   }
@@ -4590,6 +4689,7 @@ function renderTrajectory(): void {
   const previousScrollTop = scroll.scrollTop;
   trajectoryAllEntries = buildTrajectoryEntries();
   trajectoryTimelineModel = trajectoryBuildTimelineModel(trajectoryAllEntries);
+  clampTrajectoryViewport();
   const query = trajectoryCurrentQuery();
   trajectoryVisibleEntries = trajectoryFilterEntries(query);
   trajectoryDisplayRows = trajectoryBuildDisplayRows(trajectoryVisibleEntries);
@@ -4628,16 +4728,9 @@ function renderTrajectory(): void {
       `${trajectoryAllEntries.length} 步`
     );
   }
-  timeline.dataset.timelineMode = trajectoryTimelineModel?.mode ?? "sequence";
-  timeline.innerHTML = trajectoryAllEntries.length
-    ? trajectoryTimelineHtml()
-    : `<div class="trajectory-empty" style="position:static;padding:0">${trajectoryText(
-        "No trajectory events",
-        "没有轨迹事件"
-      )}</div>`;
+  renderTrajectoryTimeline();
   trajectoryUpdateToggleControls();
   updateTrajectoryRangeChrome();
-  updateTrajectoryTimelineFocus();
   const empty = document.getElementById("trajectoryEmpty");
   if (empty) {
     empty.textContent = !trajectoryAllEntries.length
@@ -4828,7 +4921,7 @@ function installTrajectoryView(): void {
         hideTrajectoryTip();
         return;
       }
-      const fraction = fractionAt(track, event.clientX);
+      const fraction = trajectoryViewFraction(fractionAt(track, event.clientX));
       if (!wasMoved) {
         if (key) {
           clearTrajectoryRange();
@@ -4858,7 +4951,7 @@ function installTrajectoryView(): void {
       if (!track) return;
       event.preventDefault();
       const span = target?.closest<HTMLElement>(".trajectory-span");
-      const fraction = fractionAt(track, event.clientX);
+      const fraction = trajectoryViewFraction(fractionAt(track, event.clientX));
       trajectoryFollow = false;
       trajectoryDrag = {
         pointerId: event.pointerId,
@@ -4884,7 +4977,7 @@ function installTrajectoryView(): void {
         if (event.pointerId !== drag.pointerId) return;
         event.preventDefault();
         if (Math.abs(event.clientX - drag.startX) >= 3) drag.moved = true;
-        const fraction = fractionAt(drag.track, event.clientX);
+        const fraction = trajectoryViewFraction(fractionAt(drag.track, event.clientX));
         trajectoryDraft = {
           startFraction: drag.startFraction,
           endFraction: fraction
@@ -4909,6 +5002,18 @@ function installTrajectoryView(): void {
       clearTrajectoryRange();
       hideTrajectoryTip();
     });
+    timeline.addEventListener(
+      "wheel",
+      (event) => {
+        if (!trajectoryAllEntries.length) return;
+        event.preventDefault();
+        if (trajectoryDrag) return;
+        trajectoryZoomTimeline(event.clientX, event.deltaY);
+        scheduleTrajectoryTimelineRender();
+        hideTrajectoryTip();
+      },
+      { passive: false }
+    );
   }
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !trajectoryRange || !trajectoryModeActive()) return;
@@ -4935,6 +5040,7 @@ function installTrajectoryView(): void {
       trajectoryRange = null;
       trajectoryDraft = null;
       trajectoryDrag = null;
+      trajectoryViewport = null;
       hideTrajectoryTip();
       renderTrajectory();
     });
