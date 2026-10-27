@@ -3326,9 +3326,18 @@ treeStyle.textContent = `
     color: var(--ink-4);
   }
   .tree-toggle:hover { background: var(--hover-strong); color: var(--ink-2); }
-  .tree-toggle .i { transition: transform .12s ease; }
+  .tree-toggle .i {
+    width: 12px;
+    height: 12px;
+    stroke-width: 2;
+    transition: transform .12s ease;
+  }
+  .tree-toggle.open { color: var(--ink-3); }
   .tree-toggle.open .i { transform: rotate(90deg); }
+  .tree-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
   .tree-toggle.placeholder { visibility: hidden; }
+  .tree-row.sel .tree-toggle { color: var(--accent-2); }
+  [data-theme="dark"] .tree-row.sel .tree-toggle { color: var(--accent); }
   .tree-key { color: var(--code-key); }
   .tree-key.index { color: var(--ink-3); min-width: 22px; text-align: right; }
   .tree-colon { color: var(--code-punct); }
@@ -3397,19 +3406,18 @@ function treePathFor(parent: string, key: string | number, index: boolean): stri
 
 function treeRowHtml(row: RustTreeRow): string {
   const pad = 8 + row.depth * 16;
+  const toggleLabel = viewLanguageIsZh()
+    ? row.expanded
+      ? "折叠"
+      : "展开"
+    : row.expanded
+      ? "Collapse"
+      : "Expand";
   const toggle = row.expandable
-    ? `<button class="tree-toggle${row.expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
+    ? `<button type="button" class="tree-toggle${row.expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
         row.path
-      )}" title="${
-        viewLanguageIsZh()
-          ? row.expanded
-            ? "折叠"
-            : "展开"
-          : row.expanded
-            ? "Collapse"
-            : "Expand"
-      }">
-        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
+      )}" tabindex="-1" aria-expanded="${row.expanded}" title="${toggleLabel}" aria-label="${toggleLabel}">
+        <svg class="i xs" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
       </button>`
     : '<span class="tree-toggle placeholder"></span>';
   const keyHtml = row.index
