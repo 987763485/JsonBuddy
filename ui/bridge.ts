@@ -3472,7 +3472,7 @@ trajectoryStyle.textContent = `
     min-width: 0;
     display: flex;
     flex-direction: column;
-    background: var(--card);
+    background: var(--card-2);
     border: 1px solid var(--line-strong);
     border-radius: 9px;
     box-shadow: var(--shadow-node);
@@ -3497,39 +3497,59 @@ trajectoryStyle.textContent = `
   }
   .trajectory-inspector-meta { font-size: 9px; color: var(--ink-3); white-space: nowrap; }
   .trajectory-inspector-head .spacer { flex: 1; }
+  .trajectory-inspector-close {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    color: var(--ink-4);
+  }
+  .trajectory-inspector-close .i { color: var(--ink-4); }
+  .trajectory-inspector-close:hover { color: var(--ink-2); }
+  .trajectory-inspector-close:hover .i { color: var(--ink-2); }
   .trajectory-tabs {
-    flex: 0 0 32px;
+    flex: 0 0 43px;
     display: flex;
     align-items: stretch;
     gap: 2px;
     padding: 0 8px;
+    background: var(--chrome);
     border-bottom: 1px solid var(--line);
     overflow-x: auto;
   }
   .trajectory-tab {
-    padding: 0 7px;
+    padding: 0 8px;
     border: 0;
     border-bottom: 2px solid transparent;
     background: transparent;
     color: var(--ink-3);
     font-family: var(--font-ui);
-    font-size: 9px;
+    font-size: 10.5px;
     white-space: nowrap;
     cursor: pointer;
   }
   .trajectory-tab:hover { color: var(--ink); }
   .trajectory-tab.on { color: var(--ink); border-bottom-color: var(--accent); }
-  .trajectory-inspector-body { flex: 1; min-height: 0; overflow: auto; padding: 11px 12px 16px; }
+  .trajectory-inspector-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    margin: 10px 11px 11px;
+    padding: 10px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+  }
   .trajectory-detail-section { margin-bottom: 11px; }
   .trajectory-detail-label {
     margin-bottom: 4px;
-    font-size: 8px;
+    font-size: 7.5px;
     font-weight: 650;
-    letter-spacing: .08em;
+    letter-spacing: .07em;
     text-transform: uppercase;
     color: var(--ink-3);
   }
-  .trajectory-detail-value { font-size: 10px; line-height: 1.65; color: var(--ink-2); word-break: break-word; }
+  .trajectory-detail-value { font-size: 10.5px; line-height: 1.65; color: var(--ink-2); word-break: break-word; }
   .trajectory-detail-value code { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink); }
   .trajectory-pre {
     margin: 0;
@@ -3546,10 +3566,28 @@ trajectoryStyle.textContent = `
     white-space: pre-wrap;
     word-break: break-word;
   }
-  .trajectory-markdown { color: var(--ink-2); font-size: 10.5px; line-height: 1.65; }
+  .trajectory-markdown {
+    max-width: 100%;
+    padding: 8px 9px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card-2);
+    color: var(--ink-2);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+  }
   .trajectory-markdown p { margin: 0 0 6px; }
   .trajectory-markdown p:last-child { margin-bottom: 0; }
-  .trajectory-markdown code { font-family: var(--font-mono); font-size: 9.5px; }
+  .trajectory-markdown code {
+    padding: 1px 3px;
+    border-radius: 3px;
+    background: var(--hover-strong);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+  }
   .trajectory-status {
     display: inline-block;
     padding: 1px 5px;
@@ -5006,7 +5044,7 @@ function installTrajectoryView(): void {
         <span class="trajectory-inspector-kind" id="trajectoryInspectorKind">—</span>
         <span class="trajectory-inspector-meta" id="trajectoryInspectorMeta"></span>
         <span class="spacer"></span>
-        <button class="pane-btn" id="trajectoryInspectorClose" type="button" title="Close"><svg class="i sm" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+        <button class="pane-btn trajectory-inspector-close" id="trajectoryInspectorClose" type="button" title="Close"><svg class="i sm" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
       </div>
       <div class="trajectory-tabs" id="trajectoryTabs"></div>
       <div class="trajectory-inspector-body" id="trajectoryInspectorBody"></div>
