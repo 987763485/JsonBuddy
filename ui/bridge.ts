@@ -98,6 +98,15 @@ scrollbarStyle.textContent = `
 `;
 document.head.appendChild(scrollbarStyle);
 
+// The monitor metadata row was redundant with the status bar. The file's
+// last-modified time now lives in the bottom monitor status bar instead.
+const monitorChromeStyle = document.createElement("style");
+monitorChromeStyle.id = "buddy-monitor-chrome";
+monitorChromeStyle.textContent = `
+  .monitor-stats { display: none !important; }
+`;
+document.head.appendChild(monitorChromeStyle);
+
 const splitterStyle = document.createElement("style");
 splitterStyle.id = "buddy-splitter-styles";
 splitterStyle.textContent = `
@@ -2490,6 +2499,27 @@ function updateStreamBufferLabel(): void {
     : "Buffer 10,000";
 }
 
+function updateMonitorModifiedStatus(modified?: string | null): void {
+  const format = document.getElementById("monitorFormat");
+  if (!format) return;
+  let item = document.getElementById("monitorModifiedStatus");
+  if (!item) {
+    item = document.createElement("span");
+    item.id = "monitorModifiedStatus";
+    item.className = "status-item";
+    format.insertAdjacentElement("afterend", item);
+  }
+  const value = String(modified ?? "").trim();
+  item.hidden = !value;
+  item.style.display = value ? "" : "none";
+  if (!value) {
+    item.textContent = "";
+    return;
+  }
+  item.textContent = streamLanguageIsZh() ? `修改于 ${value}` : `modified ${value}`;
+  item.title = item.textContent;
+}
+
 function updateRealStreamChrome(file: BridgeStreamFile, live: boolean): void {
   const zstd = file.format === "zstd";
   const lines = file.lineLabel;
@@ -2516,6 +2546,7 @@ function updateRealStreamChrome(file: BridgeStreamFile, live: boolean): void {
         : "zstd · snapshot"
       : "JSONL · UTF-8"
   );
+  updateMonitorModifiedStatus(file.modified);
   w.setText("monitorLines", `${lines} lines`);
   w.setText("monitorSize", zstd ? `${file.decoded} decoded` : file.size);
   updateStreamBufferMeter();
