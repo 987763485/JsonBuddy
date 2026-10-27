@@ -19,7 +19,8 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 - 树视图：第六种视图，支持展开/折叠、键盘导航、节点筛选、路径检查器、复制路径与跳转源码
 - 表格视图：真实 JSON 分节、列选择、行筛选、单元格检查器、源码定位与本地化空状态；长数组与对象按滚动窗口虚拟渲染，不再截断 500 行
 - 图形视图：真实 JSON 节点/边、拖拽、缩放、布局切换与迷你地图
-- 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema；类型推断、合并与代码输出全部在 Rust 中完成，界面只负责调用命令和渲染结果
+- 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema；类型推断、合并与代码输出全部在 Rust 中完成，界面只负责调用命令和渲染结果；超长生成代码使用固定行高虚拟窗口，只渲染可见行并在滚动或窗口缩放时更新
+- 滚动条：桥接层统一注入全局 `::-webkit-scrollbar` 样式，所有面板、编辑器、代码视图和侧栏使用同一宽度、圆角与主题色；原型中仅用于隐藏标签栏滚动条的规则保留
 - 导入导出：CSV / JSON / JSONL 导入写入本地文档目录；CSV、Excel、Mock 与生成代码通过原生保存对话框导出
 - JSON 搜索：键/值筛选、结果计数与跳转定位到编辑器；Mock 生成默认 100 条、上限 1,000 条；生成参数随项目保存，生成数据只作为运行期响应并在打开或启动项目时重新生成，不写入项目文件
 - JSON Mock 桥接：项目持久化、项目独立启停与路由挂载/卸载（共享本地服务同时绑定 `127.0.0.1` 与 `::1`，支持路径参数、查询参数与穿越拦截）、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入（远程 `$ref` / `$id` 拒绝、1,000 定义上限、导入来源随接口持久化）、生成/导出（JSON Schema 使用 `$defs`，OpenAPI 默认 YAML，可在保存对话框选择 `.json` 导出 JSON）、真实请求日志、HTTP/HTTPS 本地服务启停、服务运行时长与总请求数；Mock 路由中的 `..` 穿越会返回 403 并写入审计；端点测试请求由 Rust 原生发送，绕过 webview CORS 并接受应用自签名证书，目标严格限制在 localhost
