@@ -22,12 +22,12 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 - 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema
 - 导入导出：CSV / JSON / JSONL 导入写入本地文档目录；CSV、Excel、Mock 与生成代码通过原生保存对话框导出
 - JSON 搜索：键/值筛选、结果计数与跳转定位到编辑器；Mock 生成默认 100 条、上限 1,000 条
-- JSON Mock 桥接：项目持久化、端点编辑、响应体 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 本地服务启停
+- JSON Mock 桥接：项目持久化、端点编辑、响应体 CodeMirror 编辑、JSON Schema / OpenAPI（JSON、YAML）导入、生成/导出、真实请求日志、HTTP/HTTPS 本地服务启停
 - 在原型编辑器与 Mock 响应区域注入 CodeMirror 6，保持原型的排版与语法色
 - 格式化、压缩、校验仍由原型交互驱动，保存写入真实文件
 - 成功 / 失败 Toast 使用原型现有组件
 
-OpenAPI 导入仍待完善。React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
+React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
 
 ## 技术栈
 

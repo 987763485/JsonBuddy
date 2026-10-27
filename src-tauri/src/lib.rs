@@ -6,6 +6,7 @@ mod mock;
 mod settings;
 mod state;
 mod streams;
+mod yaml;
 
 use audit::{AuditConfig, AuditState};
 use data::DataPaths;
@@ -24,6 +25,11 @@ use streams::{
     read_snapshot, record_recent as record_stream_recent, StreamManager, StreamSnapshot,
 };
 use tauri::{AppHandle, Manager, State};
+
+#[tauri::command]
+fn parse_yaml_document(text: String) -> Result<serde_json::Value, String> {
+    yaml::parse_yaml_document(&text)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +313,7 @@ pub fn run() {
             open_json_document,
             save_json_document,
             save_text_file,
+        parse_yaml_document,
             remove_recent_json_document,
             list_recent_streams,
             open_stream,

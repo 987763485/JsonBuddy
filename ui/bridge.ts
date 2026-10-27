@@ -5135,6 +5135,727 @@ function updateMockEditorHighlight(): void {
   });
 }
 
+
+interface BuddyOpenApiOperation {
+  method: string;
+  path: string;
+  name: string;
+  status: number;
+  statusText: string;
+  response: string;
+  mediaType: string;
+  selected: boolean;
+}
+
+interface BuddyOpenApiSkip {
+  endpoint: string;
+  reason: string;
+}
+
+interface BuddyOpenApiImport {
+  fileName: string;
+  version: string;
+  title: string;
+  basePath: string;
+  operations: BuddyOpenApiOperation[];
+  skipped: BuddyOpenApiSkip[];
+}
+
+let buddyOpenApi: BuddyOpenApiImport | null = null;
+
+const OPENAPI_METHODS = [
+  "get",
+  "put",
+  "post",
+  "delete",
+  "options",
+  "head",
+  "patch",
+  "trace"
+] as const;
+
+function buddyIsOpenApi(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const doc = value as Record<string, any>;
+  return (
+    typeof doc.openapi === "string" || typeof doc.swagger === "string"
+  );
+}
+
+function buddyOpenApiVersion(doc: Record<string, any>): string {
+  if (typeof doc.openapi === "string" && doc.openapi.trim()) {
+    return `OpenAPI ${doc.openapi.trim()}`;
+  }
+  if (typeof doc.swagger === "string" && doc.swagger.trim()) {
+    return `Swagger ${doc.swagger.trim()}`;
+  }
+  return "OpenAPI";
+}
+
+function buddyOpenApiBasePath(doc: Record<string, any>): string {
+  const server = Array.isArray(doc.servers)
+    ? doc.servers.find((entry: unknown) => entry && typeof entry === "object")
+    : null;
+  const raw =
+    typeof server?.url === "string"
+      ? server.url.trim()
+      : typeof doc.basePath === "string"
+        ? doc.basePath.trim()
+        : "";
+  if (!raw) return "/";
+  if (raw.startsWith("/")) return raw.replace(/\/+$/, "") || "/";
+  try {
+    const pathname = new URL(raw, "http://localhost").pathname;
+    return pathname.replace(/\/+$/, "") || "/";
+  } catch {
+    return "/";
+  }
+}
+
+function buddyOpenApiExampleFromMedia(media: unknown): {
+  found: boolean;
+  value?: unknown;
+} {
+  if (!media || typeof media !== "object" || Array.isArray(media)) {
+    return { found: false };
+  }
+  const entry = media as Record<string, any>;
+  if (Object.prototype.hasOwnProperty.call(entry, "example")) {
+    return { found: true, value: entry.example };
+  }
+  if (
+    entry.examples &&
+    typeof entry.examples === "object" &&
+    !Array.isArray(entry.examples)
+  ) {
+    for (const example of Object.values(entry.examples)) {
+      if (!example || typeof example !== "object") {
+        if (example !== undefined) return { found: true, value: example };
+        continue;
+      }
+      if ("$ref" in (example as Record<string, any>)) continue;
+      if (Object.prototype.hasOwnProperty.call(example, "value")) {
+        return { found: true, value: (example as Record<string, any>).value };
+      }
+    }
+  }
+  const schema = entry.schema;
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    const shape = schema as Record<string, any>;
+    if (Object.prototype.hasOwnProperty.call(shape, "example")) {
+      return { found: true, value: shape.example };
+    }
+    if (Array.isArray(shape.examples) && shape.examples.length) {
+      return { found: true, value: shape.examples[0] };
+    }
+    if (Object.prototype.hasOwnProperty.call(shape, "default")) {
+      return { found: true, value: shape.default };
+    }
+  }
+  return { found: false };
+}
+
+function buddyOpenApiExampleFromSchema(schema: unknown): {
+  found: boolean;
+  value?: unknown;
+} {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { found: false };
+  }
+  const shape = schema as Record<string, any>;
+  if (Object.prototype.hasOwnProperty.call(shape, "example")) {
+    return { found: true, value: shape.example };
+  }
+  if (Array.isArray(shape.examples) && shape.examples.length) {
+    return { found: true, value: shape.examples[0] };
+  }
+  if (Object.prototype.hasOwnProperty.call(shape, "default")) {
+    return { found: true, value: shape.default };
+  }
+  return { found: false };
+}
+
+function buddyOpenApiResponseText(value: unknown): string {
+  let shaped = value;
+  if (typeof shaped === "string" && /^\s*[\[{]/.test(shaped)) {
+    try {
+      shaped = JSON.parse(shaped);
+    } catch {
+      // Keep the original string when it only looks like JSON.
+    }
+  }
+  const text = JSON.stringify(shaped, null, 2);
+  return typeof text === "string" ? text : "null";
+}
+
+function buddyOpenApiStatusText(status: number): string {
+  const labels: Record<number, string> = {
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    203: "Non-Authoritative Information",
+    204: "No Content",
+    205: "Reset Content",
+    206: "Partial Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    409: "Conflict",
+    410: "Gone",
+    415: "Unsupported Media Type",
+    422: "Unprocessable Entity",
+    429: "Too Many Requests",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout"
+  };
+  return labels[status] ?? "OK";
+}
+
+function buddyPickOpenApiResponse(
+  responses: unknown
+):
+  | { status: number; mediaType: string; value: unknown }
+  | { reason: string } {
+  if (!responses || typeof responses !== "object" || Array.isArray(responses)) {
+    return { reason: "no responses" };
+  }
+  const codes = Object.keys(responses as Record<string, unknown>)
+    .map((key) => ({ key, code: Number(key) }))
+    .filter(
+      (entry) =>
+        Number.isInteger(entry.code) && entry.code >= 200 && entry.code <= 299
+    )
+    .sort((left, right) => left.code - right.code);
+  if (!codes.length) return { reason: "no 2xx response" };
+  const chosen = codes.find((entry) => entry.code === 200) ?? codes[0];
+  const response = (responses as Record<string, any>)[chosen.key];
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    return { reason: "invalid response" };
+  }
+  if ("$ref" in response) return { reason: "response uses $ref" };
+
+  if (
+    response.content &&
+    typeof response.content === "object" &&
+    !Array.isArray(response.content)
+  ) {
+    const mediaTypes = Object.keys(response.content).filter(
+      (key) =>
+        response.content[key] &&
+        typeof response.content[key] === "object" &&
+        !Array.isArray(response.content[key])
+    );
+    if (mediaTypes.length) {
+      const mediaType =
+        mediaTypes.find((key) => key.toLowerCase() === "application/json") ??
+        mediaTypes.find((key) => key.toLowerCase().includes("json"));
+      if (!mediaType) return { reason: "no JSON example response" };
+      const example = buddyOpenApiExampleFromMedia(response.content[mediaType]);
+      if (!example.found || example.value === undefined) {
+        return { reason: "no inline JSON example" };
+      }
+      return { status: chosen.code, mediaType, value: example.value };
+    }
+  }
+
+  if (
+    response.examples &&
+    typeof response.examples === "object" &&
+    !Array.isArray(response.examples)
+  ) {
+    const mediaTypes = Object.keys(response.examples).filter(
+      (key) => response.examples[key] !== undefined
+    );
+    if (mediaTypes.length) {
+      const mediaType =
+        mediaTypes.find((key) => key.toLowerCase() === "application/json") ??
+        mediaTypes.find((key) => key.toLowerCase().includes("json"));
+      if (!mediaType) return { reason: "no JSON example response" };
+      return {
+        status: chosen.code,
+        mediaType,
+        value: response.examples[mediaType]
+      };
+    }
+  }
+
+  if (response.schema) {
+    const example = buddyOpenApiExampleFromSchema(response.schema);
+    if (!example.found || example.value === undefined) {
+      return { reason: "no inline JSON example" };
+    }
+    return {
+      status: chosen.code,
+      mediaType: "application/json",
+      value: example.value
+    };
+  }
+
+  return { reason: "no inline JSON example" };
+}
+
+function buddyJoinOpenApiPath(base: string, route: string): string {
+  let root = String(base || "/").trim();
+  if (!root.startsWith("/")) root = `/${root}`;
+  root = root.replace(/\/+$/, "");
+  const tail = String(route || "").replace(/^\/+/, "");
+  return `${root}/${tail}` || "/";
+}
+
+function buddyOpenApiProjectName(imported: BuddyOpenApiImport): string {
+  let name = imported.title.trim();
+  if (!name) {
+    const base = imported.fileName
+      .replace(/\.(schema\.)?(json|ya?ml)$/i, "")
+      .replace(/[^A-Za-z0-9]+/g, " ")
+      .trim();
+    name = base
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  }
+  if (!name) name = "Imported";
+  if (!/api$/i.test(name)) name += " API";
+  return name;
+}
+
+function buddyOpenApiReport(): void {
+  const box = document.getElementById("schemaError");
+  if (!box || !buddyOpenApi) return;
+  const skipped = buddyOpenApi.skipped;
+  if (!skipped.length) {
+    box.textContent = "";
+    box.hidden = true;
+    return;
+  }
+  const prefix = buddyOpenApi.operations.length
+    ? `Skipped ${skipped.length} endpoint${skipped.length === 1 ? "" : "s"}: `
+    : "No importable endpoints. ";
+  box.textContent =
+    prefix +
+    skipped
+      .map((entry) => `${entry.endpoint} (${entry.reason})`)
+      .join(" · ");
+  box.hidden = false;
+}
+
+function applyBuddyOpenApi(fileName: string, doc: Record<string, any>): void {
+  const version = buddyOpenApiVersion(doc);
+  const basePath = buddyOpenApiBasePath(doc);
+  const operations: BuddyOpenApiOperation[] = [];
+  const skipped: BuddyOpenApiSkip[] = [];
+  const paths = doc.paths;
+  if (!paths || typeof paths !== "object" || Array.isArray(paths)) {
+    w.showSchemaError?.("The OpenAPI document has no paths.");
+    return;
+  }
+  for (const [rawPath, pathItem] of Object.entries(
+    paths as Record<string, unknown>
+  )) {
+    if (!rawPath.startsWith("/")) {
+      skipped.push({ endpoint: rawPath, reason: "path must start with /" });
+      continue;
+    }
+    if (!pathItem || typeof pathItem !== "object" || Array.isArray(pathItem)) {
+      skipped.push({ endpoint: rawPath, reason: "invalid path item" });
+      continue;
+    }
+    if ("$ref" in pathItem) {
+      skipped.push({ endpoint: rawPath, reason: "path item uses $ref" });
+      continue;
+    }
+    for (const method of OPENAPI_METHODS) {
+      if (!Object.prototype.hasOwnProperty.call(pathItem, method)) continue;
+      const operation = (pathItem as Record<string, any>)[method];
+      const label = `${method.toUpperCase()} ${rawPath}`;
+      if (
+        !operation ||
+        typeof operation !== "object" ||
+        Array.isArray(operation)
+      ) {
+        skipped.push({ endpoint: label, reason: "invalid operation" });
+        continue;
+      }
+      const picked = buddyPickOpenApiResponse(operation.responses);
+      if ("reason" in picked) {
+        skipped.push({ endpoint: label, reason: picked.reason });
+        continue;
+      }
+      const path = rawPath.replace(/\{([^}]+)\}/g, ":$1");
+      const summary =
+        typeof operation.summary === "string" && operation.summary.trim()
+          ? operation.summary.trim()
+          : typeof operation.operationId === "string" &&
+              operation.operationId.trim()
+            ? operation.operationId.trim()
+            : label;
+      operations.push({
+        method: method.toUpperCase(),
+        path,
+        name: summary,
+        status: picked.status,
+        statusText: buddyOpenApiStatusText(picked.status),
+        response: buddyOpenApiResponseText(picked.value),
+        mediaType: picked.mediaType,
+        selected: true
+      });
+    }
+  }
+
+  const title =
+    doc.info && typeof doc.info.title === "string" ? doc.info.title : "";
+  buddyOpenApi = {
+    fileName,
+    version,
+    title,
+    basePath,
+    operations,
+    skipped
+  };
+  const state = evalGlobal<Record<string, any> | null>("schemaImport");
+  if (state) {
+    state.fileName = fileName;
+    state.root = doc;
+    state.draft = version;
+    state.defs = operations;
+  }
+  w.setText?.("schemaFileName", fileName);
+  w.setText?.(
+    "schemaFileMeta",
+    `${operations.length} operation${operations.length === 1 ? "" : "s"} · ${version}`
+  );
+  const fileBox = document.getElementById("schemaFile");
+  if (fileBox) fileBox.hidden = false;
+  const drop = document.getElementById("schemaDrop");
+  if (drop) drop.hidden = true;
+  const types = document.getElementById("schemaTypes");
+  if (types) types.hidden = false;
+  const target = document.getElementById("schemaTargetRow");
+  if (target) target.hidden = false;
+  const baseInput = document.getElementById(
+    "schemaBasePath"
+  ) as HTMLInputElement | null;
+  if (baseInput) baseInput.value = basePath || "/";
+  const errorBox = document.getElementById("schemaError");
+  if (errorBox) errorBox.hidden = true;
+  w.renderSchemaTypes?.();
+  w.updateSchemaImportUI?.();
+  buddyOpenApiReport();
+}
+
+function importBuddyOpenApi(): boolean {
+  if (!buddyOpenApi) return false;
+  const state = evalGlobal<Record<string, any> | null>("schemaImport");
+  if (!state) return true;
+  const selected = buddyOpenApi.operations.filter(
+    (operation) => operation.selected
+  );
+  if (!selected.length) return true;
+  const baseInput = document.getElementById(
+    "schemaBasePath"
+  ) as HTMLInputElement | null;
+  const basePath = baseInput?.value || buddyOpenApi.basePath || "/";
+  const endpoints: BridgeMockEndpoint[] = selected.map((operation) => ({
+    id: mockUuid(),
+    method: operation.method,
+    cls: operation.method.toLowerCase(),
+    path: buddyJoinOpenApiPath(basePath, operation.path),
+    status: operation.status,
+    statusText: operation.statusText,
+    name: operation.name,
+    delayMs: 0,
+    enabled: true,
+    response: operation.response,
+    importedFrom: buddyOpenApi?.fileName
+  }));
+  const projects = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS");
+  const uniqueSlug = (value: string): string => {
+    const normalized =
+      typeof w.normalizeMockSlug === "function"
+        ? w.normalizeMockSlug(value)
+        : String(value || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+    const base = normalized || "imported-api";
+    return typeof w.uniqueMockSlug === "function"
+      ? w.uniqueMockSlug(base)
+      : base;
+  };
+  const createProject = (
+    name: string,
+    description: string,
+    slug: string
+  ): string => {
+    const id = mockUuid();
+    projects.push({
+      id,
+      name: name || "Imported API",
+      description:
+        description || `Mock project imported from ${buddyOpenApi?.fileName}.`,
+      slug: uniqueSlug(slug || name),
+      running: false,
+      updated: "just now",
+      schemaCount: selected.length,
+      endpoints
+    });
+    return id;
+  };
+
+  const pending = state.pendingProject;
+  let projectId = "";
+  let startIndex = 0;
+  if (pending) {
+    projectId = createProject(
+      pending.name || "Imported API",
+      pending.description || "",
+      pending.slug || ""
+    );
+  } else {
+    const target = document.getElementById(
+      "schemaTargetProject"
+    ) as HTMLSelectElement | null;
+    const targetValue = target?.value || "__new__";
+    if (targetValue === "__new__") {
+      projectId = createProject(
+        buddyOpenApiProjectName(buddyOpenApi),
+        `Mock project imported from ${buddyOpenApi.fileName}.`,
+        buddyOpenApi.title || "imported-api"
+      );
+    } else {
+      const project = projects.find((entry) => entry.id === targetValue);
+      if (!project) return true;
+      const mode =
+        (document.getElementById("schemaMode") as HTMLSelectElement | null)
+          ?.value || "append";
+      if (mode === "replace") {
+        project.endpoints = endpoints;
+        project.schemaCount = selected.length;
+      } else {
+        let firstTouched = -1;
+        for (const incoming of endpoints) {
+          const existing = project.endpoints.findIndex(
+            (entry) =>
+              entry.method.toUpperCase() === incoming.method.toUpperCase() &&
+              entry.path === incoming.path
+          );
+          if (existing >= 0) {
+            project.endpoints[existing] = incoming;
+            if (firstTouched < 0) firstTouched = existing;
+          } else {
+            project.endpoints.push(incoming);
+            if (firstTouched < 0) firstTouched = project.endpoints.length - 1;
+          }
+        }
+        startIndex = Math.max(firstTouched, 0);
+        project.schemaCount = Math.max(
+          project.schemaCount || 0,
+          selected.length
+        );
+      }
+      project.updated = "just now";
+      projectId = project.id;
+    }
+  }
+
+  w.closeMockImportSchema?.();
+  if (!projectId) return true;
+  w.openMockProject?.(projectId);
+  if (startIndex > 0) w.renderMockEndpoints?.(startIndex);
+  const skipped = buddyOpenApi.skipped.length;
+  toast(
+    `Imported ${endpoints.length} endpoint${endpoints.length === 1 ? "" : "s"}`,
+    skipped
+      ? `${skipped} endpoint${skipped === 1 ? "" : "s"} skipped · ${buddyOpenApi.fileName}`
+      : buddyOpenApi.fileName
+  );
+  buddyOpenApi = null;
+  return true;
+}
+
+function patchOpenApiImport(): void {
+  const originalOpen = w.openMockImportSchema;
+  const originalApply = w.applyParsedSchema;
+  const originalClear = w.clearSchemaFile;
+  const originalRenderTypes = w.renderSchemaTypes;
+  const originalUpdateUI = w.updateSchemaImportUI;
+
+  w.openMockImportSchema = (options?: unknown) => {
+    buddyOpenApi = null;
+    originalOpen(options);
+    const input = document.getElementById(
+      "schemaFileInput"
+    ) as HTMLInputElement | null;
+    if (input) {
+      input.accept =
+        ".json,.yaml,.yml,.schema.json,application/json,application/yaml,application/schema+json";
+    }
+  };
+
+  w.readSchemaFile = async (file: File | null) => {
+    if (!file) return;
+    // Drop any previous selection so a failed parse cannot leave stale
+    // operations importable behind an error message.
+    w.clearSchemaFile?.();
+    if (file.size > 10 * 1024 * 1024) {
+      w.showSchemaError?.(
+        "This file is larger than 10 MB. Choose a smaller schema."
+      );
+      return;
+    }
+    if (typeof file.text !== "function") {
+      w.showSchemaError?.("This browser cannot read the selected file.");
+      return;
+    }
+    const name = file.name || "schema.json";
+    const yaml = /\.ya?ml$/i.test(name);
+    let text = "";
+    try {
+      text = await file.text();
+    } catch (error) {
+      w.showSchemaError?.(`Could not read ${name}: ${String(error)}`);
+      return;
+    }
+    let root: unknown;
+    if (yaml) {
+      try {
+        root = await invoke<unknown>("parse_yaml_document", { text });
+      } catch (error) {
+        w.showSchemaError?.(`Could not parse ${name}: ${String(error)}`);
+        return;
+      }
+    } else {
+      try {
+        root = JSON.parse(text);
+      } catch (error) {
+        w.showSchemaError?.(
+          `Could not parse ${name}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        return;
+      }
+    }
+    if (!root || typeof root !== "object" || Array.isArray(root)) {
+      w.showSchemaError?.(
+        "The file must contain a JSON Schema or OpenAPI object."
+      );
+      return;
+    }
+    if (buddyIsOpenApi(root)) {
+      applyBuddyOpenApi(name, root);
+      return;
+    }
+    if (yaml) {
+      w.showSchemaError?.(
+        `${name} is YAML but is not an OpenAPI / Swagger document.`
+      );
+      return;
+    }
+    buddyOpenApi = null;
+    w.applyParsedSchema?.(name, root);
+  };
+
+  w.applyParsedSchema = (fileName: string, root: unknown) => {
+    buddyOpenApi = null;
+    originalApply(fileName, root);
+  };
+
+  w.clearSchemaFile = (event?: Event) => {
+    buddyOpenApi = null;
+    originalClear(event);
+  };
+
+  w.renderSchemaTypes = () => {
+    if (!buddyOpenApi) {
+      originalRenderTypes();
+      return;
+    }
+    const host = document.getElementById("schemaTypes");
+    if (!host) return;
+    const check =
+      '<svg class="i" viewBox="0 0 24 24" style="width:8px;height:8px;stroke-width:3"><use href="#i-check"/></svg>';
+    host.innerHTML = buddyOpenApi.operations
+      .map(
+        (operation, index) => `
+      <button class="schema-type${operation.selected ? " on" : ""}" data-def="${index}" onclick="toggleSchemaType(this)">
+        <span class="schema-check">${check}</span>
+        <b>${w.escHtml(`${operation.method} ${operation.path}`)}</b>
+        <small>${w.escHtml(
+          `${operation.status} ${operation.statusText} · ${operation.mediaType}`
+        )}</small>
+      </button>`
+      )
+      .join("");
+  };
+
+  w.updateSchemaImportUI = () => {
+    if (!buddyOpenApi) {
+      originalUpdateUI();
+      return;
+    }
+    const state = evalGlobal<Record<string, any> | null>("schemaImport");
+    if (!state) return;
+    const selected = buddyOpenApi.operations.filter(
+      (operation) => operation.selected
+    );
+    const action = document.getElementById(
+      "schemaImportAction"
+    ) as HTMLButtonElement | null;
+    if (action) {
+      action.disabled = !state.fileName || selected.length === 0;
+    }
+    const skipped = buddyOpenApi.skipped.length;
+    const summary = selected.length
+      ? `${selected.length} operation${selected.length === 1 ? "" : "s"} · ${
+          skipped ? `${skipped} skipped` : "all importable"
+        }`
+      : buddyOpenApi.operations.length
+        ? "Select at least one operation"
+        : "No importable endpoints";
+    w.setText?.("schemaSummary", summary);
+    const target = document.getElementById(
+      "schemaTargetProject"
+    ) as HTMLSelectElement | null;
+    const targetValue = state.pendingProject ? "" : target?.value || "__new__";
+    w.setText?.(
+      "schemaImportActionLabel",
+      state.pendingProject || targetValue === "__new__"
+        ? "Create project"
+        : "Import schema"
+    );
+    const mode =
+      (document.getElementById("schemaMode") as HTMLSelectElement | null)
+        ?.value || "append";
+    const baseInput = document.getElementById(
+      "schemaBasePath"
+    ) as HTMLInputElement | null;
+    let note = `Endpoints keep their method, path and inline JSON examples. Base path: ${
+      baseInput?.value || buddyOpenApi.basePath || "/"
+    }.`;
+    if (skipped) {
+      note += ` ${skipped} endpoint${
+        skipped === 1 ? "" : "s"
+      } skipped; see the report above.`;
+    }
+    if (state.pendingProject) {
+      note += ` Import will create “${state.pendingProject.name}”.`;
+    } else if (targetValue === "__new__") {
+      note += " A new project will be created from this file.";
+    } else if (mode === "replace") {
+      note += " Replace removes the current endpoints before importing.";
+    } else {
+      note += " Append keeps existing endpoints and updates matching routes.";
+    }
+    w.setText?.("schemaNote", note);
+  };
+}
+
 function patchMockFlow(): void {
   const originalRenderMockCode = w.renderMockCode;
   const originalRenderMockEndpoint = w.renderMockEndpoint;
@@ -5296,7 +6017,7 @@ function patchMockFlow(): void {
     const before = new Set(
       evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS").map((project) => project.id)
     );
-    originalImportSchema();
+    if (!importBuddyOpenApi()) originalImportSchema();
     const projects = evalGlobal<BridgeMockProject[]>("MOCK_PROJECTS");
     try {
       for (const project of projects) {
@@ -5483,6 +6204,7 @@ async function bootstrap(): Promise<void> {
     patchCompareFlow();
     patchStreamFlow();
     startStreamEventBridge();
+    patchOpenApiImport();
     patchMockFlow();
     startMockEventBridge();
     patchAuditFlow();
