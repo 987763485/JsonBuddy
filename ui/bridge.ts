@@ -2925,11 +2925,50 @@ interface TrajectoryEntry {
   call?: ConversationToolCall;
 }
 
+interface TrajectorySummary {
+  kind: "summary";
+  key: string;
+  summaryKind: "turn" | "calls";
+  group: string;
+  round: number;
+  step: number;
+  line: number;
+  count: number;
+  toolCount: number;
+  text: string;
+}
+
+type TrajectoryDisplayRow = TrajectoryEntry | TrajectorySummary;
+
+interface TrajectoryTimelineSpan {
+  entry: TrajectoryEntry;
+  left: number;
+  width: number;
+}
+
+interface TrajectoryTimelineModel {
+  mode: "sequence" | "duration";
+  spans: TrajectoryTimelineSpan[];
+}
+
 const TRAJECTORY_ROW_HEIGHT = 46;
 const TRAJECTORY_OVERSCAN = 8;
+const TRAJECTORY_DURATION_STORAGE = "json_buddy.trajectory.actualDuration";
+const TRAJECTORY_TIMELINE_SAMPLE = 1_200;
 let trajectoryInstalled = false;
 let trajectoryAllEntries: TrajectoryEntry[] = [];
 let trajectoryVisibleEntries: TrajectoryEntry[] = [];
+let trajectoryDisplayRows: TrajectoryDisplayRow[] = [];
+let trajectoryTimelineModel: TrajectoryTimelineModel | null = null;
+let trajectoryActualDuration = (() => {
+  try {
+    return localStorage.getItem(TRAJECTORY_DURATION_STORAGE) === "1";
+  } catch {
+    return false;
+  }
+})();
+const trajectoryCollapsedTurns = new Set<number>();
+const trajectoryCollapsedAssistants = new Set<string>();
 let trajectorySelectedKey: string | null = null;
 let trajectoryInspectorHidden = false;
 let trajectoryActiveTab = "overview";
@@ -2983,6 +3022,7 @@ trajectoryStyle.textContent = `
     border-radius: 9px;
     box-shadow: var(--shadow-node);
   }
+  .trajectory-controls { display: flex; align-items: center; gap: 2px; }
   .trajectory-stat {
     display: inline-flex;
     align-items: center;
@@ -2998,6 +3038,47 @@ trajectoryStyle.textContent = `
     font-weight: 550;
     color: var(--ink-2);
   }
+  .trajectory-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 23px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ink-3);
+    font-family: var(--font-ui);
+    font-size: 9.5px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .trajectory-toggle:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+  .trajectory-toggle[aria-pressed="true"] {
+    border-color: var(--accent-ring);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+  }
+  .trajectory-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .trajectory-toggle:disabled { opacity: .45; cursor: default; }
+  .trajectory-toggle .i { width: 12px; height: 12px; color: var(--ink-4); }
+  .trajectory-toggle[aria-pressed="true"] .i { color: var(--accent-2); }
+  .trajectory-toggle b {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 550;
+    color: var(--ink-2);
+  }
+  .trajectory-fold {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .trajectory-fold .plus { display: none; }
+  .trajectory-toggle[aria-pressed="true"] .trajectory-fold .minus { display: none; }
+  .trajectory-toggle[aria-pressed="true"] .trajectory-fold .plus { display: inline; }
   .trajectory-spacer { flex: 1; }
   .trajectory-step-count { color: var(--ink-3); }
   .trajectory-timeline {
@@ -3170,6 +3251,12 @@ trajectoryStyle.textContent = `
   .trajectory-sub { font-family: var(--font-mono); font-size: 9px; color: var(--ink-4); }
   .trajectory-row.tool .trajectory-title { color: var(--accent-2); }
   .trajectory-row.tool.error .trajectory-title { color: var(--code-null); }
+  .trajectory-row.summary { background: color-mix(in srgb, var(--hover) 58%, transparent); }
+  .trajectory-row.summary:hover { background: var(--hover-strong); }
+  .trajectory-row.summary .trajectory-role { color: var(--ink-4); }
+  .trajectory-row.summary .trajectory-title { color: var(--ink-3); }
+  .trajectory-row.summary .trajectory-title b { color: var(--ink-2); font-weight: 600; }
+  .trajectory-row.summary .trajectory-tail { color: var(--ink-3); }
   .trajectory-tail {
     font-family: var(--font-mono);
     font-size: 8.5px;
@@ -3436,6 +3523,218 @@ function buildTrajectoryEntries(): TrajectoryEntry[] {
   return entries;
 }
 
+function trajectoryRoundGroups(entries: TrajectoryEntry[]): Array<{ round: number; items: TrajectoryEntry[] }> {
+  const groups: Array<{ round: number; items: TrajectoryEntry[] }> = [];
+  for (const entry of entries) {
+    const last = groups[groups.length - 1];
+    if (last && last.round === entry.round) last.items.push(entry);
+    else groups.push({ round: entry.round, items: [entry] });
+  }
+  return groups;
+}
+
+function trajectoryCollapsibleTurnIds(): number[] {
+  return trajectoryRoundGroups(trajectoryAllEntries)
+    .filter((group) => group.items.length > 1)
+    .map((group) => group.round);
+}
+
+function trajectoryCollapsibleAssistantIds(): string[] {
+  const toolIds = new Set(
+    trajectoryAllEntries
+      .filter((entry) => entry.kind === "tool" && entry.call?.id)
+      .map((entry) => entry.call!.id)
+  );
+  return trajectoryAllEntries
+    .filter(
+      (entry) =>
+        entry.kind === "assistant" &&
+        (entry.message?.toolCalls ?? []).some((id) => toolIds.has(id))
+    )
+    .map((entry) => entry.key);
+}
+
+function trajectoryTurnSummary(items: TrajectoryEntry[]): { text: string; steps: number; tools: number } {
+  const steps = items.filter((entry) => entry.kind === "assistant").length;
+  const tools = items.filter((entry) => entry.kind === "tool").length;
+  const stepLabel = trajectoryText(
+    `${steps} ${steps === 1 ? "step" : "steps"}`,
+    `${steps} 个步骤`
+  );
+  const toolLabel = trajectoryText(
+    `${tools} ${tools === 1 ? "tool call" : "tool calls"}`,
+    `${tools} 个工具调用`
+  );
+  return { text: `${stepLabel} · ${toolLabel}`, steps, tools };
+}
+
+function trajectoryCallsSummary(tools: TrajectoryEntry[]): string {
+  const names = [...new Set(tools.map((entry) => entry.call?.name).filter(Boolean))];
+  const label = trajectoryText(
+    `${tools.length} ${tools.length === 1 ? "tool call" : "tool calls"}`,
+    `${tools.length} 个工具调用`
+  );
+  return names.length ? `${label} · ${names.join(", ")}` : label;
+}
+
+function trajectoryBuildDisplayRows(entries: TrajectoryEntry[]): TrajectoryDisplayRow[] {
+  const rows: TrajectoryDisplayRow[] = [];
+  for (const group of trajectoryRoundGroups(entries)) {
+    if (trajectoryCollapsedTurns.has(group.round) && group.items.length > 1) {
+      const first = group.items[0];
+      if (!first) continue;
+      const hidden = group.items.slice(1);
+      const summary = trajectoryTurnSummary(hidden);
+      rows.push(first);
+      rows.push({
+        kind: "summary",
+        key: `summary:turn:${group.round}`,
+        summaryKind: "turn",
+        group: String(group.round),
+        round: group.round,
+        step: first.step,
+        line: hidden[hidden.length - 1]?.line ?? first.line,
+        count: hidden.length,
+        toolCount: summary.tools,
+        text: summary.text
+      });
+      continue;
+    }
+    for (let index = 0; index < group.items.length; index += 1) {
+      const entry = group.items[index];
+      if (!entry) continue;
+      rows.push(entry);
+      if (entry.kind !== "assistant" || !trajectoryCollapsedAssistants.has(entry.key)) continue;
+      const ids = new Set(entry.message?.toolCalls ?? []);
+      const tools: TrajectoryEntry[] = [];
+      let cursor = index + 1;
+      while (cursor < group.items.length) {
+        const candidate = group.items[cursor];
+        if (!candidate || candidate.kind !== "tool") break;
+        if (ids.size && candidate.call?.id && !ids.has(candidate.call.id)) break;
+        tools.push(candidate);
+        cursor += 1;
+      }
+      if (!tools.length) continue;
+      rows.push({
+        kind: "summary",
+        key: `summary:calls:${entry.key}`,
+        summaryKind: "calls",
+        group: entry.key,
+        round: entry.round,
+        step: entry.step,
+        line: tools[tools.length - 1]?.line ?? entry.line,
+        count: tools.length,
+        toolCount: tools.length,
+        text: trajectoryCallsSummary(tools)
+      });
+      index = cursor - 1;
+    }
+  }
+  return rows;
+}
+
+function trajectoryAllTurnsCollapsed(): boolean {
+  const ids = trajectoryCollapsibleTurnIds();
+  return ids.length > 0 && ids.every((id) => trajectoryCollapsedTurns.has(id));
+}
+
+function trajectoryAllCallsCollapsed(): boolean {
+  const ids = trajectoryCollapsibleAssistantIds();
+  return ids.length > 0 && ids.every((id) => trajectoryCollapsedAssistants.has(id));
+}
+
+function trajectoryUpdateToggleControls(): void {
+  const duration = document.getElementById("trajectoryDurationToggle") as HTMLButtonElement | null;
+  const turns = document.getElementById("trajectoryTurnsToggle") as HTMLButtonElement | null;
+  const calls = document.getElementById("trajectoryCallsToggle") as HTMLButtonElement | null;
+  if (duration) {
+    duration.setAttribute("aria-pressed", trajectoryActualDuration ? "true" : "false");
+    duration.title = trajectoryText(
+      trajectoryActualDuration ? "Use equal-width operations" : "Use actual duration",
+      trajectoryActualDuration ? "使用等宽操作" : "使用实际时长"
+    );
+    duration.setAttribute("aria-label", duration.title);
+    duration.disabled = trajectoryAllEntries.length === 0;
+  }
+  if (turns) {
+    const collapsible = trajectoryCollapsibleTurnIds();
+    const collapsed = trajectoryAllTurnsCollapsed();
+    turns.disabled = collapsible.length === 0;
+    turns.setAttribute("aria-pressed", collapsed ? "true" : "false");
+    turns.title = trajectoryText(
+      collapsed ? "Expand all turns" : "Collapse all turns",
+      collapsed ? "展开所有轮次" : "收起所有轮次"
+    );
+    turns.setAttribute("aria-label", turns.title);
+  }
+  if (calls) {
+    const collapsible = trajectoryCollapsibleAssistantIds();
+    const collapsed = trajectoryAllCallsCollapsed();
+    calls.disabled = collapsible.length === 0;
+    calls.setAttribute("aria-pressed", collapsed ? "true" : "false");
+    calls.title = trajectoryText(
+      collapsed ? "Expand all calls" : "Collapse all calls",
+      collapsed ? "展开所有调用" : "收起所有调用"
+    );
+    calls.setAttribute("aria-label", calls.title);
+  }
+}
+
+function trajectoryRefreshDisplayRows(): void {
+  trajectoryDisplayRows = trajectoryBuildDisplayRows(trajectoryVisibleEntries);
+  trajectoryUpdateToggleControls();
+  trajectoryPaintRows();
+}
+
+function trajectoryToggleTurn(round: number): void {
+  if (trajectoryCollapsedTurns.has(round)) trajectoryCollapsedTurns.delete(round);
+  else trajectoryCollapsedTurns.add(round);
+  trajectoryRefreshDisplayRows();
+}
+
+function trajectoryToggleAllTurns(): void {
+  const ids = trajectoryCollapsibleTurnIds();
+  if (!ids.length) return;
+  if (trajectoryAllTurnsCollapsed()) {
+    for (const id of ids) trajectoryCollapsedTurns.delete(id);
+  } else {
+    for (const id of ids) trajectoryCollapsedTurns.add(id);
+  }
+  trajectoryRefreshDisplayRows();
+}
+
+function trajectoryToggleAssistant(key: string): void {
+  if (trajectoryCollapsedAssistants.has(key)) trajectoryCollapsedAssistants.delete(key);
+  else trajectoryCollapsedAssistants.add(key);
+  trajectoryRefreshDisplayRows();
+}
+
+function trajectoryToggleAllCalls(): void {
+  const ids = trajectoryCollapsibleAssistantIds();
+  if (!ids.length) return;
+  if (trajectoryAllCallsCollapsed()) {
+    for (const id of ids) trajectoryCollapsedAssistants.delete(id);
+  } else {
+    for (const id of ids) trajectoryCollapsedAssistants.add(id);
+  }
+  trajectoryRefreshDisplayRows();
+}
+
+function trajectoryRevealEntry(entry: TrajectoryEntry): void {
+  let changed = false;
+  if (trajectoryCollapsedTurns.delete(entry.round)) changed = true;
+  if (entry.kind === "tool" && entry.call?.id) {
+    const parent = trajectoryAllEntries.find(
+      (candidate) =>
+        candidate.kind === "assistant" &&
+        (candidate.message?.toolCalls ?? []).includes(entry.call!.id)
+    );
+    if (parent && trajectoryCollapsedAssistants.delete(parent.key)) changed = true;
+  }
+  if (changed) trajectoryRefreshDisplayRows();
+}
+
 function trajectoryEntryMatches(entry: TrajectoryEntry, query: string): boolean {
   if (!query) return true;
   const fields = [
@@ -3494,7 +3793,32 @@ function trajectoryEntryTail(entry: TrajectoryEntry): { text: string; className:
   return { text: chatTime(entry.timestamp), className: "" };
 }
 
-function trajectoryRowHtml(entry: TrajectoryEntry, position: number): string {
+function trajectorySummaryRowHtml(row: TrajectorySummary, position: number): string {
+  const turn = row.summaryKind === "turn";
+  const role = turn ? trajectoryText("Turn", "轮次") : trajectoryText("Calls", "调用");
+  const action = turn
+    ? trajectoryText("Expand this turn", "展开此轮次")
+    : trajectoryText("Expand these calls", "展开这些调用");
+  const icon = turn ? "i-fold" : "i-wrench";
+  return `<button type="button" class="trajectory-row summary ${row.summaryKind}" data-trajectory-summary="${row.summaryKind}" data-trajectory-summary-group="${w.escHtml(
+    row.group
+  )}" aria-label="${w.escHtml(action)}" title="${w.escHtml(action)}" style="top:${
+    position * TRAJECTORY_ROW_HEIGHT
+  }px">
+    <span class="trajectory-role summary"><svg class="i" viewBox="0 0 24 24"><use href="#${icon}"/></svg>${w.escHtml(
+      role
+    )}</span>
+    <span class="trajectory-copy">
+      <span class="trajectory-title">… <b>${w.escHtml(row.text)}</b></span>
+      <span class="trajectory-sub">#L${row.line}</span>
+    </span>
+    <span class="trajectory-tail">+</span>
+  </button>`;
+}
+
+function trajectoryRowHtml(row: TrajectoryDisplayRow, position: number): string {
+  if (row.kind === "summary") return trajectorySummaryRowHtml(row, position);
+  const entry = row;
   const role = trajectoryRoleLabel(entry);
   const title = trajectoryEntryTitle(entry);
   const sub = trajectoryEntrySub(entry);
@@ -3523,28 +3847,31 @@ function trajectoryPaintRows(): void {
   const scroller = document.getElementById("trajectoryScroll");
   const empty = document.getElementById("trajectoryEmpty");
   if (!canvas || !scroller) return;
-  const total = trajectoryVisibleEntries.length;
+  const total = trajectoryDisplayRows.length;
   canvas.style.height = `${total * TRAJECTORY_ROW_HEIGHT}px`;
   if (empty) empty.hidden = total > 0;
   if (!total) {
     canvas.innerHTML = "";
     return;
   }
+  const maxScrollTop = Math.max(0, total * TRAJECTORY_ROW_HEIGHT - scroller.clientHeight);
+  const viewTop = Math.min(scroller.scrollTop, maxScrollTop);
+  if (scroller.scrollTop > viewTop) scroller.scrollTop = viewTop;
   const start = Math.max(
     0,
-    Math.floor(scroller.scrollTop / TRAJECTORY_ROW_HEIGHT) - TRAJECTORY_OVERSCAN
+    Math.floor(viewTop / TRAJECTORY_ROW_HEIGHT) - TRAJECTORY_OVERSCAN
   );
   const end = Math.min(
     total,
     Math.ceil(
-      (scroller.scrollTop + Math.max(scroller.clientHeight, TRAJECTORY_ROW_HEIGHT)) /
+      (viewTop + Math.max(scroller.clientHeight, TRAJECTORY_ROW_HEIGHT)) /
         TRAJECTORY_ROW_HEIGHT
     ) + TRAJECTORY_OVERSCAN
   );
   let html = "";
   for (let index = start; index < end; index += 1) {
-    const entry = trajectoryVisibleEntries[index];
-    if (entry) html += trajectoryRowHtml(entry, index);
+    const row = trajectoryDisplayRows[index];
+    if (row) html += trajectoryRowHtml(row, index);
   }
   canvas.innerHTML = html;
 }
@@ -3560,7 +3887,9 @@ function scheduleTrajectoryPaint(): void {
 function trajectoryScrollToEntry(key: string): void {
   const scroller = document.getElementById("trajectoryScroll");
   if (!scroller) return;
-  const index = trajectoryVisibleEntries.findIndex((entry) => entry.key === key);
+  const index = trajectoryDisplayRows.findIndex(
+    (row) => row.kind !== "summary" && row.key === key
+  );
   if (index < 0) return;
   scroller.scrollTop = Math.max(
     0,
@@ -3572,6 +3901,9 @@ function trajectoryScrollToEntry(key: string): void {
 function trajectorySelect(key: string, reveal = true): void {
   const entry = trajectoryAllEntries.find((item) => item.key === key);
   if (!entry) return;
+  if (!trajectoryDisplayRows.some((row) => row.kind !== "summary" && row.key === key)) {
+    trajectoryRevealEntry(entry);
+  }
   trajectorySelectedKey = key;
   trajectoryInspectorHidden = false;
   trajectoryActiveTab = "overview";
@@ -3587,13 +3919,88 @@ function trajectoryMetricDuration(): string {
     : "—";
 }
 
-function trajectoryTimelineHtml(entries: TrajectoryEntry[]): string {
+function trajectoryTimestampMs(entry: TrajectoryEntry): number | null {
+  if (!entry.timestamp) return null;
+  const value = Date.parse(entry.timestamp);
+  return Number.isFinite(value) ? value : null;
+}
+
+function trajectorySequenceTimeline(entries: TrajectoryEntry[]): TrajectoryTimelineModel {
   const total = Math.max(1, entries.length);
+  return {
+    mode: "sequence",
+    spans: entries.map((entry) => ({
+      entry,
+      left: entry.index / total,
+      width: 1 / total
+    }))
+  };
+}
+
+function trajectoryBuildTimelineModel(entries: TrajectoryEntry[]): TrajectoryTimelineModel {
+  if (!trajectoryActualDuration || entries.length < 2) return trajectorySequenceTimeline(entries);
+  const timed: Array<{ entry: TrajectoryEntry; start: number; end: number }> = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const start = trajectoryTimestampMs(entry);
+    if (start === null) continue;
+    let end = start;
+    if (entry.kind === "tool" && entry.call?.durationMs != null) {
+      const duration = Number(entry.call.durationMs);
+      if (Number.isFinite(duration)) end = start + Math.max(0, duration);
+    } else if (entry.kind === "assistant") {
+      const next = entries[index + 1];
+      if (next?.kind === "tool" && next.round === entry.round) {
+        const nextStart = trajectoryTimestampMs(next);
+        if (nextStart !== null) end = Math.max(start, nextStart);
+      }
+    }
+    timed.push({ entry, start, end });
+  }
+  if (timed.length < 2) return trajectorySequenceTimeline(entries);
+  const sorted = [...timed].sort((left, right) => left.start - right.start || left.end - right.end);
+  const offsets = new Map<(typeof timed)[number], number>();
+  let removedIdle = 0;
+  let coveredUntil: number | null = null;
+  for (const span of sorted) {
+    if (coveredUntil !== null && span.start > coveredUntil) removedIdle += span.start - coveredUntil;
+    offsets.set(span, removedIdle);
+    coveredUntil = coveredUntil === null ? span.end : Math.max(coveredUntil, span.end);
+  }
+  const projected = timed.map((span) => {
+    const offset = offsets.get(span) ?? 0;
+    return {
+      entry: span.entry,
+      start: span.start - offset,
+      end: Math.max(span.start, span.end) - offset
+    };
+  });
+  const domainStart = Math.min(...projected.map((span) => span.start));
+  const domainEnd = Math.max(...projected.map((span) => span.end));
+  const domain = domainEnd - domainStart;
+  if (!(domain > 0)) return trajectorySequenceTimeline(entries);
+  const byEntry = new Map(projected.map((span) => [span.entry.key, span]));
+  let lastLeft = 0;
+  const spans = entries.map((entry) => {
+    const span = byEntry.get(entry.key);
+    if (!span) return { entry, left: lastLeft, width: 0 };
+    lastLeft = (span.start - domainStart) / domain;
+    return {
+      entry,
+      left: lastLeft,
+      width: Math.max(0, (span.end - span.start) / domain)
+    };
+  });
+  return { mode: "duration", spans };
+}
+
+function trajectoryTimelineHtml(): string {
+  const model = trajectoryTimelineModel;
+  const spans = model?.spans ?? [];
   const queryInput = document.getElementById("monitorFilter") as HTMLInputElement | null;
   const query = String(queryInput?.value ?? "").trim().toLowerCase();
-  const span = (entry: TrajectoryEntry, stride = 1) => {
-    const left = (entry.index / total) * 100;
-    const width = (stride / total) * 100;
+  const spanHtml = (span: TrajectoryTimelineSpan) => {
+    const entry = span.entry;
     const status = entry.call ? trajectoryStatus(entry.call) : null;
     const classes = [
       "trajectory-span",
@@ -3618,26 +4025,28 @@ function trajectoryTimelineHtml(entries: TrajectoryEntry[]): string {
       entry.key
     )}" data-trajectory-index="${entry.index}" role="presentation" aria-label="${w.escHtml(
       label
-    )}" style="left:${left}%;width:max(3px, calc(${width}% - 2px))"></span>`;
+    )}" style="left:${span.left * 100}%;width:max(3px, calc(${span.width * 100}% - 2px))"></span>`;
   };
-  const lane = (label: string, items: TrajectoryEntry[]) => {
-    const stride = items.length > 1_200 ? Math.ceil(items.length / 1_200) : 1;
-    const sampled = stride > 1
-      ? items.filter((_, index) => index % stride === 0 || index === items.length - 1)
-      : items;
+  const lane = (label: string, kind: TrajectoryEntryKind) => {
+    const items = spans.filter((span) => span.entry.kind === kind);
+    const stride =
+      items.length > TRAJECTORY_TIMELINE_SAMPLE
+        ? Math.ceil(items.length / TRAJECTORY_TIMELINE_SAMPLE)
+        : 1;
+    const sampled =
+      stride > 1
+        ? items.filter((_, index) => index % stride === 0 || index === items.length - 1)
+        : items;
     return `<div class="trajectory-lane"><span class="trajectory-lane-label">${w.escHtml(
       label
     )}</span><div class="trajectory-track"><div class="trajectory-range" hidden></div>${sampled
-      .map((entry) => span(entry, stride))
+      .map(spanHtml)
       .join("")}</div></div>`;
   };
   return (
-    lane(trajectoryText("Input", "输入"), entries.filter((entry) => entry.kind === "user")) +
-    lane(
-      trajectoryText("Model", "模型"),
-      entries.filter((entry) => entry.kind === "assistant")
-    ) +
-    lane(trajectoryText("Tools", "工具"), entries.filter((entry) => entry.kind === "tool"))
+    lane(trajectoryText("Input", "输入"), "user") +
+    lane(trajectoryText("Model", "模型"), "assistant") +
+    lane(trajectoryText("Tools", "工具"), "tool")
   );
 }
 
@@ -3677,17 +4086,57 @@ function updateTrajectoryRangeChrome(): void {
   badge.title = trajectoryText("Clear range filter (Esc)", "清除区间过滤 (Esc)");
 }
 
+function trajectoryTimelineSpanAt(fraction: number): TrajectoryTimelineSpan | null {
+  const spans = trajectoryTimelineModel?.spans ?? [];
+  if (!spans.length) return null;
+  const value = Math.max(0, Math.min(1, fraction));
+  let best = spans[0] ?? null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const span of spans) {
+    const right = span.left + span.width;
+    if (value >= span.left - 1e-9 && value <= right + 1e-9) return span;
+    const distance = Math.min(Math.abs(value - span.left), Math.abs(value - right));
+    if (distance < bestDistance) {
+      best = span;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function trajectoryRangeIndexesAtFractions(
+  startFraction: number,
+  endFraction: number
+): [number, number] | null {
+  const spans = trajectoryTimelineModel?.spans ?? [];
+  if (!spans.length) return null;
+  const from = Math.max(0, Math.min(1, Math.min(startFraction, endFraction)));
+  const to = Math.max(0, Math.min(1, Math.max(startFraction, endFraction)));
+  const indexes = spans
+    .filter((span) => span.left + span.width >= from - 1e-9 && span.left <= to + 1e-9)
+    .map((span) => span.entry.index);
+  if (!indexes.length) {
+    const first = trajectoryTimelineSpanAt(from);
+    const last = trajectoryTimelineSpanAt(to);
+    if (first) indexes.push(first.entry.index);
+    if (last) indexes.push(last.entry.index);
+  }
+  if (!indexes.length) return null;
+  return [Math.min(...indexes), Math.max(...indexes)];
+}
+
 function updateTrajectoryTimelineFocus(): void {
   const total = Math.max(1, trajectoryAllEntries.length);
   const query = trajectoryCurrentQuery();
   const draft = trajectoryDraft;
+  const draftRange = draft
+    ? trajectoryRangeIndexesAtFractions(draft.startFraction, draft.endFraction)
+    : null;
   document.querySelectorAll<HTMLElement>(".trajectory-span").forEach((span) => {
     const index = Number(span.dataset.trajectoryIndex);
     let outside = false;
-    if (draft) {
-      const from = Math.min(draft.startFraction, draft.endFraction) * total;
-      const to = Math.max(draft.startFraction, draft.endFraction) * total;
-      outside = !(index + 1 > from && index < to);
+    if (draftRange) {
+      outside = index < draftRange[0] || index > draftRange[1];
     } else if (trajectoryRange) {
       outside = index < trajectoryRange.start || index > trajectoryRange.end;
     }
@@ -3705,10 +4154,23 @@ function updateTrajectoryTimelineFocus(): void {
         end: Math.max(draft.startFraction, draft.endFraction)
       }
     : trajectoryRange
-      ? {
-          start: trajectoryRange.start / total,
-          end: (trajectoryRange.end + 1) / total
-        }
+      ? (() => {
+          const spans = (trajectoryTimelineModel?.spans ?? []).filter(
+            (span) =>
+              span.entry.index >= trajectoryRange!.start &&
+              span.entry.index <= trajectoryRange!.end
+          );
+          if (spans.length) {
+            return {
+              start: Math.min(...spans.map((span) => span.left)),
+              end: Math.max(...spans.map((span) => span.left + span.width))
+            };
+          }
+          return {
+            start: trajectoryRange.start / total,
+            end: (trajectoryRange.end + 1) / total
+          };
+        })()
       : null;
   document.querySelectorAll<HTMLElement>(".trajectory-range").forEach((bar) => {
     if (!selection) {
@@ -3795,6 +4257,7 @@ function clearTrajectoryRange(): void {
     trajectoryVisibleEntries[0];
   trajectorySelectedKey = target?.key ?? null;
   if (target) trajectoryInspectorHidden = false;
+  trajectoryDisplayRows = trajectoryBuildDisplayRows(trajectoryVisibleEntries);
   updateTrajectoryRangeChrome();
   updateTrajectoryTimelineFocus();
   trajectoryPaintRows();
@@ -3821,6 +4284,7 @@ function applyTrajectoryRange(start: number, end: number): void {
   }
   const scroll = document.getElementById("trajectoryScroll");
   if (scroll) scroll.scrollTop = 0;
+  trajectoryDisplayRows = trajectoryBuildDisplayRows(trajectoryVisibleEntries);
   updateTrajectoryRangeChrome();
   updateTrajectoryTimelineFocus();
   trajectoryPaintRows();
@@ -3829,10 +4293,7 @@ function applyTrajectoryRange(start: number, end: number): void {
 }
 
 function trajectoryHintForClick(fraction: number): TrajectoryEntry | null {
-  const total = trajectoryAllEntries.length;
-  if (!total) return null;
-  const index = Math.max(0, Math.min(total - 1, Math.floor(fraction * total)));
-  return trajectoryAllEntries[index] ?? null;
+  return trajectoryTimelineSpanAt(fraction)?.entry ?? null;
 }
 
 function trajectoryPre(text: string, limit = 120_000): string {
@@ -4074,12 +4535,16 @@ function renderTrajectory(): void {
     trajectoryRange = null;
     trajectoryDraft = null;
     trajectoryDrag = null;
+    trajectoryCollapsedTurns.clear();
+    trajectoryCollapsedAssistants.clear();
   }
   hideTrajectoryTip();
   const previousScrollTop = scroll.scrollTop;
   trajectoryAllEntries = buildTrajectoryEntries();
+  trajectoryTimelineModel = trajectoryBuildTimelineModel(trajectoryAllEntries);
   const query = trajectoryCurrentQuery();
   trajectoryVisibleEntries = trajectoryFilterEntries(query);
+  trajectoryDisplayRows = trajectoryBuildDisplayRows(trajectoryVisibleEntries);
   if (
     !trajectorySelectedKey ||
     !trajectoryVisibleEntries.some((entry) => entry.key === trajectorySelectedKey)
@@ -4115,12 +4580,14 @@ function renderTrajectory(): void {
       `${trajectoryAllEntries.length} 步`
     );
   }
+  timeline.dataset.timelineMode = trajectoryTimelineModel?.mode ?? "sequence";
   timeline.innerHTML = trajectoryAllEntries.length
-    ? trajectoryTimelineHtml(trajectoryAllEntries)
+    ? trajectoryTimelineHtml()
     : `<div class="trajectory-empty" style="position:static;padding:0">${trajectoryText(
         "No trajectory events",
         "没有轨迹事件"
       )}</div>`;
+  trajectoryUpdateToggleControls();
   updateTrajectoryRangeChrome();
   updateTrajectoryTimelineFocus();
   const empty = document.getElementById("trajectoryEmpty");
@@ -4213,6 +4680,7 @@ function updateTrajectoryLanguage(): void {
   if (filter && trajectoryModeActive()) {
     filter.placeholder = trajectoryText("Search trajectory", "搜索轨迹");
   }
+  trajectoryUpdateToggleControls();
 }
 
 function installTrajectoryView(): void {
@@ -4237,9 +4705,11 @@ function installTrajectoryView(): void {
     shell.setAttribute("aria-label", "Conversation trajectory");
     shell.innerHTML = `<section class="trajectory-main">
       <div class="trajectory-toolbar">
-        <span class="trajectory-stat"><svg class="i" viewBox="0 0 24 24"><use href="#i-clock"/></svg><span id="trajectoryDurationLabel">Duration</span><b id="trajectoryDuration">—</b></span>
-        <span class="trajectory-stat"><svg class="i" viewBox="0 0 24 24"><use href="#i-history"/></svg><span id="trajectoryTurnsLabel">Turns</span><b id="trajectoryTurns">0</b></span>
-        <span class="trajectory-stat"><svg class="i" viewBox="0 0 24 24"><use href="#i-wrench"/></svg><span id="trajectoryCallsLabel">Calls</span><b id="trajectoryCalls">0</b></span>
+        <span class="trajectory-controls">
+          <button type="button" class="trajectory-toggle" id="trajectoryDurationToggle" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><use href="#i-clock"/></svg><span id="trajectoryDurationLabel">Duration</span><b id="trajectoryDuration">—</b></button>
+          <button type="button" class="trajectory-toggle" id="trajectoryTurnsToggle" aria-pressed="false"><svg class="i trajectory-fold" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path class="minus" d="M5.2 8h5.6"/><path class="plus" d="M8 5.2v5.6"/></svg><span id="trajectoryTurnsLabel">Turns</span><b id="trajectoryTurns">0</b></button>
+          <button type="button" class="trajectory-toggle" id="trajectoryCallsToggle" aria-pressed="false"><svg class="i trajectory-fold" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path class="minus" d="M5.2 8h5.6"/><path class="plus" d="M8 5.2v5.6"/></svg><span id="trajectoryCallsLabel">Calls</span><b id="trajectoryCalls">0</b></button>
+        </span>
         <span class="trajectory-spacer"></span>
         <button type="button" class="trajectory-range-badge" id="trajectoryRangeBadge" hidden><span id="trajectoryRangeText">0</span><svg class="i" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
         <span class="trajectory-stat"><b id="trajectoryStepCount">0 steps</b></span>
@@ -4268,7 +4738,16 @@ function installTrajectoryView(): void {
   const rows = document.getElementById("trajectoryRows");
   if (rows) {
     rows.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-trajectory-key]") : null;
+      const element = event.target instanceof Element ? event.target : null;
+      const summary = element?.closest<HTMLElement>("[data-trajectory-summary]");
+      if (summary) {
+        const kind = summary.dataset.trajectorySummary;
+        const group = summary.dataset.trajectorySummaryGroup ?? "";
+        if (kind === "turn") trajectoryToggleTurn(Number(group));
+        else if (kind === "calls" && group) trajectoryToggleAssistant(group);
+        return;
+      }
+      const target = element?.closest<HTMLElement>("[data-trajectory-key]");
       const key = target?.dataset.trajectoryKey;
       if (key) trajectorySelect(key);
     });
@@ -4315,20 +4794,13 @@ function installTrajectoryView(): void {
         hideTrajectoryTip();
         return;
       }
-      const total = trajectoryAllEntries.length;
-      if (!total) {
+      const range = trajectoryRangeIndexesAtFractions(startFraction, fraction);
+      if (!range) {
         clearTrajectoryRange();
         updateTrajectoryTimelineFocus();
         return;
       }
-      const from = Math.min(startFraction, fraction);
-      const to = Math.max(startFraction, fraction);
-      const start = Math.max(0, Math.min(total - 1, Math.floor(from * total)));
-      const end = Math.max(
-        start,
-        Math.min(total - 1, Math.max(0, Math.ceil(to * total) - 1))
-      );
-      applyTrajectoryRange(start, end);
+      applyTrajectoryRange(range[0], range[1]);
       hideTrajectoryTip();
     };
     timeline.addEventListener("pointerdown", (event) => {
@@ -4403,6 +4875,26 @@ function installTrajectoryView(): void {
       hideTrajectoryTip();
     });
   }
+  const durationToggle = document.getElementById("trajectoryDurationToggle");
+  if (durationToggle) {
+    durationToggle.addEventListener("click", () => {
+      trajectoryActualDuration = !trajectoryActualDuration;
+      try {
+        localStorage.setItem(TRAJECTORY_DURATION_STORAGE, trajectoryActualDuration ? "1" : "0");
+      } catch {
+        // The preference is optional when storage is unavailable.
+      }
+      trajectoryRange = null;
+      trajectoryDraft = null;
+      trajectoryDrag = null;
+      hideTrajectoryTip();
+      renderTrajectory();
+    });
+  }
+  const turnsToggle = document.getElementById("trajectoryTurnsToggle");
+  if (turnsToggle) turnsToggle.addEventListener("click", trajectoryToggleAllTurns);
+  const callsToggle = document.getElementById("trajectoryCallsToggle");
+  if (callsToggle) callsToggle.addEventListener("click", trajectoryToggleAllCalls);
   const scroll = document.getElementById("trajectoryScroll");
   if (scroll) {
     scroll.addEventListener("scroll", () => {
