@@ -1,3 +1,4 @@
+use crate::audit::AuditEntry;
 use crate::data::{now_iso, write_json, write_text, DataPaths};
 use axum::body::Body;
 use axum::extract::State;
@@ -10,13 +11,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Ipv6Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -124,10 +125,12 @@ struct MockServerHandle {
     https: bool,
     started: Instant,
     handle: Handle<SocketAddr>,
+    ipv6_handle: Option<Handle<SocketAddr>>,
     join: Option<JoinHandle<()>>,
 }
 
 type MockEmitter = Arc<dyn Fn(MockRequestLog) + Send + Sync>;
+type MockAudit = Arc<dyn Fn(AuditEntry) + Send + Sync>;
 
 #[derive(Clone)]
 struct ServerCtx {
@@ -136,6 +139,7 @@ struct ServerCtx {
     requests: Arc<AtomicU64>,
     running_projects: Arc<RwLock<HashSet<String>>>,
     emit: MockEmitter,
+    audit: MockAudit,
 }
 
 impl MockServerHandle {
@@ -158,6 +162,9 @@ impl MockServerHandle {
     fn stop(&mut self) {
         self.handle
             .graceful_shutdown(Some(Duration::from_millis(650)));
+        if let Some(handle) = self.ipv6_handle.as_ref() {
+            handle.graceful_shutdown(Some(Duration::from_millis(650)));
+        }
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -419,11 +426,7 @@ impl MockState {
         }
         let port = self.port.load(Ordering::SeqCst);
         let https = self.https.load(Ordering::SeqCst);
-        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
-            .map_err(|error| format!("could not bind mock port {port}: {error}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("could not configure mock listener: {error}"))?;
+        let (listener, ipv6_listener) = bind_mock_listeners(port)?;
 
         let projects = self.projects.clone();
         let logs = self.logs.clone();
@@ -437,9 +440,17 @@ impl MockState {
         let emit: MockEmitter = Arc::new(move |entry| {
             let _ = emitter_app.emit("mock-request", entry);
         });
+        let audit_app = app.clone();
+        let audit: MockAudit = Arc::new(move |entry| {
+            if let Some(state) = audit_app.try_state::<crate::state::AppState>() {
+                crate::audit::record_and_emit(&audit_app, &state.audit, entry);
+            }
+        });
         let certs = self.certs_dir.clone();
         let handle = Handle::<SocketAddr>::new();
         let server_handle = handle.clone();
+        let ipv6_handle = ipv6_listener.as_ref().map(|_| Handle::<SocketAddr>::new());
+        let server_handle6 = ipv6_handle.clone();
         let join = thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -460,42 +471,42 @@ impl MockState {
                         requests,
                         running_projects,
                         emit,
+                        audit,
                     });
-                let result = if https {
-                    match tls_config(&certs).await {
-                        Ok(config) => match axum_server::from_tcp_rustls(listener, config) {
-                            Ok(server) => {
-                                server
-                                    .handle(server_handle)
-                                    .serve(router.into_make_service())
-                                    .await
-                            }
-                            Err(error) => {
-                                eprintln!("could not create mock TLS server: {error}");
-                                return;
-                            }
-                        },
+                if https {
+                    let config = match tls_config(&certs).await {
+                        Ok(config) => config,
                         Err(error) => {
                             eprintln!("could not prepare mock TLS: {error}");
                             return;
                         }
-                    }
+                    };
+                    let config6 = config.clone();
+                    let router6 = router.clone();
+                    let handle6 = server_handle6.clone();
+                    tokio::join!(
+                        serve_https(listener, router, server_handle, config),
+                        async move {
+                            if let Some(listener) = ipv6_listener {
+                                if let Some(handle) = handle6 {
+                                    serve_https(listener, router6, handle, config6).await;
+                                }
+                            }
+                        }
+                    );
                 } else {
-                    match axum_server::from_tcp(listener) {
-                        Ok(server) => {
-                            server
-                                .handle(server_handle)
-                                .serve(router.into_make_service())
-                                .await
+                    let router6 = router.clone();
+                    let handle6 = server_handle6.clone();
+                    tokio::join!(
+                        serve_http(listener, router, server_handle),
+                        async move {
+                            if let Some(listener) = ipv6_listener {
+                                if let Some(handle) = handle6 {
+                                    serve_http(listener, router6, handle).await;
+                                }
+                            }
                         }
-                        Err(error) => {
-                            eprintln!("could not create mock server: {error}");
-                            return;
-                        }
-                    }
-                };
-                if let Err(error) = result {
-                    eprintln!("mock server stopped: {error}");
+                    );
                 }
             });
         });
@@ -505,6 +516,7 @@ impl MockState {
             https,
             started: Instant::now(),
             handle,
+            ipv6_handle,
             join: Some(join),
         };
         let status = server.status();
@@ -713,6 +725,41 @@ async fn handle_request(
         return cors_response(StatusCode::NO_CONTENT, Body::empty());
     }
     ctx.requests.fetch_add(1, Ordering::SeqCst);
+    if path_has_traversal(&path) {
+        let decoded = percent_decode_path(&path).replace('\\', "/");
+        (ctx.audit)(AuditEntry::app(
+            "traversal",
+            "critical",
+            "Directory traversal",
+            decoded,
+            "mock-route",
+            true,
+            "Rule: mock route path escapes its project mount.",
+        ));
+        let entry = MockRequestLog {
+            project_id: String::new(),
+            project_name: String::new(),
+            method: method.as_str().to_string(),
+            path: path.clone(),
+            status: StatusCode::FORBIDDEN.as_u16(),
+            duration_ms: started.elapsed().as_millis() as u64,
+            at: now_iso(),
+        };
+        if let Ok(mut logs) = ctx.logs.write() {
+            logs.insert(0, entry.clone());
+            logs.truncate(200);
+        }
+        (ctx.emit)(entry);
+        let body = json!({
+            "error": "Mock route path is outside the mounted project",
+            "method": method.as_str(),
+            "path": path
+        });
+        return cors_response(
+            StatusCode::FORBIDDEN,
+            Body::from(serde_json::to_vec(&body).unwrap_or_default()),
+        );
+    }
     let mounted = ctx
         .running_projects
         .read()
@@ -809,13 +856,13 @@ fn find_endpoint(
     None
 }
 
-fn percent_decode_query(input: &str) -> String {
+fn percent_decode(input: &str, plus_as_space: bool) -> String {
     let bytes = input.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
-            b'+' => {
+            b'+' if plus_as_space => {
                 decoded.push(b' ');
                 index += 1;
             }
@@ -837,6 +884,19 @@ fn percent_decode_query(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn percent_decode_path(input: &str) -> String {
+    percent_decode(input, false)
+}
+
+fn percent_decode_query(input: &str) -> String {
+    percent_decode(input, true)
+}
+
+fn path_has_traversal(path: &str) -> bool {
+    let decoded = percent_decode_path(path).replace('\\', "/");
+    decoded.split('/').any(|segment| segment == "..")
 }
 
 fn query_pairs(query: &str) -> Vec<(String, String)> {
@@ -900,6 +960,66 @@ fn cors_response(status: StatusCode, body: Body) -> Response {
     response
 }
 
+fn bind_mock_listeners(port: u16) -> Result<(TcpListener, Option<TcpListener>), String> {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
+        .map_err(|error| format!("could not bind mock port {port}: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("could not configure mock listener: {error}"))?;
+    let bound_port = listener
+        .local_addr()
+        .map_err(|error| format!("could not inspect mock listener: {error}"))?
+        .port();
+    let ipv6_listener = TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, bound_port)))
+        .ok()
+        .and_then(|listener| {
+            listener
+                .set_nonblocking(true)
+                .ok()
+                .map(|_| listener)
+        });
+    Ok((listener, ipv6_listener))
+}
+
+async fn serve_http(
+    listener: TcpListener,
+    router: Router,
+    handle: Handle<SocketAddr>,
+) {
+    match axum_server::from_tcp(listener) {
+        Ok(server) => {
+            if let Err(error) = server
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+            {
+                eprintln!("mock server stopped: {error}");
+            }
+        }
+        Err(error) => eprintln!("could not create mock server: {error}"),
+    }
+}
+
+async fn serve_https(
+    listener: TcpListener,
+    router: Router,
+    handle: Handle<SocketAddr>,
+    config: RustlsConfig,
+) {
+    match axum_server::from_tcp_rustls(listener, config) {
+        Ok(server) => {
+            if let Err(error) = server
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+            {
+                eprintln!("mock TLS server stopped: {error}");
+            }
+        }
+        Err(error) => eprintln!("could not create mock TLS server: {error}"),
+    }
+}
+
 async fn tls_config(certs: &Path) -> Result<RustlsConfig, String> {
     fs::create_dir_all(certs)
         .map_err(|error| format!("could not create {}: {error}", certs.display()))?;
@@ -923,6 +1043,76 @@ async fn tls_config(certs: &Path) -> Result<RustlsConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binds_mock_listeners_to_loopback() {
+        let (ipv4, ipv6) = bind_mock_listeners(0).expect("listeners");
+        let ipv4_address = ipv4.local_addr().expect("ipv4 address");
+        assert!(ipv4_address.ip().is_loopback());
+        if let Some(ipv6) = ipv6 {
+            let ipv6_address = ipv6.local_addr().expect("ipv6 address");
+            assert!(ipv6_address.ip().is_loopback());
+            assert_eq!(ipv6_address.port(), ipv4_address.port());
+        }
+    }
+
+    #[test]
+    fn serves_both_loopback_families() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let (ipv4, ipv6) = bind_mock_listeners(0).expect("listeners");
+        let Some(ipv6) = ipv6 else {
+            return;
+        };
+        let port = ipv4.local_addr().expect("ipv4 address").port();
+        let ipv4_handle = Handle::<SocketAddr>::new();
+        let ipv6_handle = Handle::<SocketAddr>::new();
+        let shutdown_v4 = ipv4_handle.clone();
+        let shutdown_v6 = ipv6_handle.clone();
+        let join = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async move {
+                let router = Router::new().route("/", axum::routing::get(|| async { "ok" }));
+                tokio::join!(
+                    serve_http(ipv4, router.clone(), shutdown_v4),
+                    serve_http(ipv6, router, shutdown_v6)
+                );
+            });
+        });
+
+        for address in [
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        ] {
+            let mut stream = None;
+            for _ in 0..60 {
+                if let Ok(connection) = TcpStream::connect(address) {
+                    stream = Some(connection);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            let mut stream = stream.expect("listener should accept connections");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("timeout");
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .expect("write");
+            let mut response = String::new();
+            stream.read_to_string(&mut response).expect("read");
+            assert!(response.starts_with("HTTP/1.1 200"));
+            assert!(response.ends_with("ok"));
+        }
+
+        ipv4_handle.graceful_shutdown(Some(Duration::from_millis(50)));
+        ipv6_handle.graceful_shutdown(Some(Duration::from_millis(50)));
+        join.join().expect("server thread");
+    }
 
     #[test]
     fn axum_server_accepts_a_nonblocking_listener() {
@@ -1032,6 +1222,47 @@ mod tests {
     }
 
     #[test]
+    fn detects_route_traversal_patterns() {
+        assert!(path_has_traversal("/movies-api/../secret"));
+        assert!(path_has_traversal("/movies-api/%2e%2e/secret"));
+        assert!(path_has_traversal("/movies-api/movies\\..\\secret"));
+        assert!(!path_has_traversal("/movies-api/movies/tt1"));
+        assert!(!path_has_traversal("/movies-api/movies/..hidden"));
+    }
+
+    #[tokio::test]
+    async fn blocks_and_audits_route_traversal() {
+        let project = sample_project();
+        let project_id = project.id.clone();
+        let captured: Arc<Mutex<Vec<AuditEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_writer = captured.clone();
+        let ctx = ServerCtx {
+            projects: Arc::new(RwLock::new(vec![project])),
+            logs: Arc::new(RwLock::new(Vec::new())),
+            requests: Arc::new(AtomicU64::new(0)),
+            running_projects: Arc::new(RwLock::new(HashSet::from([project_id]))),
+            emit: Arc::new(|_| {}),
+            audit: Arc::new(move |entry| {
+                captured_writer.lock().expect("capture").push(entry);
+            }),
+        };
+        let request = Request::builder()
+            .method("GET")
+            .uri("/movies-api/%2e%2e/secret")
+            .body(Body::empty())
+            .expect("request");
+        let response = handle_request(axum::extract::State(ctx.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let audits = captured.lock().expect("audit");
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].category, "traversal");
+        assert!(audits[0].blocked);
+        assert!(audits[0].target.contains("../secret"));
+        assert_eq!(ctx.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.logs.read().expect("logs")[0].status, 403);
+    }
+
+    #[test]
     fn finds_mounted_endpoint() {
         let project = sample_project();
         let (found, endpoint) =
@@ -1054,6 +1285,7 @@ mod tests {
             requests: requests.clone(),
             running_projects: running.clone(),
             emit: Arc::new(|_| {}),
+            audit: Arc::new(|_| {}),
         };
         let request = || {
             Request::builder()

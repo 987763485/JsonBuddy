@@ -2,10 +2,10 @@ use crate::audit::{analyze, AuditEntry};
 use crate::conversation::{normalize_events, Conversation};
 use crate::documents::{RecentStream, RecentStore};
 use notify::{RecursiveMode, Watcher};
-use serde::Serialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -19,14 +19,24 @@ const MAX_BUFFER_EVENTS: usize = 10_000;
 const MAX_BUFFER_BYTES: usize = 50 * 1024 * 1024;
 const MAX_STREAM_BYTES: u64 = 256 * 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamEvent {
     pub line: u64,
     pub raw: String,
+    #[serde(default)]
     pub ts: Option<String>,
+    #[serde(default)]
     pub level: Option<String>,
+    #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamArchivePage {
+    pub events: Vec<StreamEvent>,
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -82,7 +92,12 @@ impl StreamManager {
         }
     }
 
-    pub fn start(&mut self, app: &AppHandle, path: &str) -> Result<(), String> {
+    pub fn start(
+        &mut self,
+        app: &AppHandle,
+        path: &str,
+        cache_dir: &Path,
+    ) -> Result<(), String> {
         let target = fs::canonicalize(path)
             .map_err(|err| format!("could not resolve stream path: {err}"))?;
         let key = target.to_string_lossy().to_string();
@@ -90,7 +105,7 @@ impl StreamManager {
 
         let format = stream_format(&target)
             .ok_or_else(|| "only .jsonl, .jsonl.zstd and .jsonl.zst streams are supported".to_string())?;
-        let snapshot = read_snapshot(&key)?;
+        let snapshot = read_snapshot_cached(&key, cache_dir)?;
         let metadata = fs::metadata(&target)
             .map_err(|err| format!("could not read {}: {err}", target.display()))?;
         let parent = target
@@ -113,6 +128,7 @@ impl StreamManager {
         let thread_app = app.clone();
         let thread_target = target.clone();
         let thread_key = key.clone();
+        let thread_cache_dir = cache_dir.to_path_buf();
         let initial_offset = metadata.len();
         let mut offset = initial_offset;
         let mut line_no = snapshot.lines;
@@ -146,6 +162,7 @@ impl StreamManager {
                             &mut compressed_pending,
                             &mut decoded_pending,
                             &mut event_buffer,
+                            &thread_cache_dir,
                         );
                         if let Err(message) = result {
                             let _ = thread_app.emit(
@@ -194,7 +211,19 @@ pub fn stream_format(path: &Path) -> Option<&'static str> {
     }
 }
 
-pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
+#[cfg(test)]
+fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
+    read_snapshot_impl(path, None)
+}
+
+pub fn read_snapshot_cached(path: &str, cache_dir: &Path) -> Result<StreamSnapshot, String> {
+    read_snapshot_impl(path, Some(cache_dir))
+}
+
+fn read_snapshot_impl(
+    path: &str,
+    cache_dir: Option<&Path>,
+) -> Result<StreamSnapshot, String> {
     let file_path = PathBuf::from(path);
     let canonical = fs::canonicalize(&file_path)
         .map_err(|err| format!("could not resolve {path}: {err}"))?;
@@ -226,7 +255,15 @@ pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
         all_events.push(parse_event(line_no, line));
     }
     let mut events = all_events;
-    trim_event_buffer(&mut events);
+    if let Some(cache_dir) = cache_dir {
+        let archive = archive_path(cache_dir, &canonical);
+        let dropped = trim_event_buffer_collect(&mut events);
+        if let Err(error) = write_archive(&archive, &dropped, true) {
+            eprintln!("could not write stream archive: {error}");
+        }
+    } else {
+        trim_event_buffer(&mut events);
+    }
     let conversation = normalize_events(&events);
     let path_string = canonical.to_string_lossy().to_string();
     let audit = analyze(&conversation, &path_string);
@@ -259,6 +296,122 @@ fn trim_event_buffer(events: &mut Vec<StreamEvent>) {
     }
 }
 
+fn trim_event_buffer_collect(events: &mut Vec<StreamEvent>) -> Vec<StreamEvent> {
+    let mut dropped = Vec::new();
+    if events.len() > MAX_BUFFER_EVENTS {
+        let start = events.len() - MAX_BUFFER_EVENTS;
+        dropped.extend(events.drain(..start));
+    }
+    let mut bytes: usize = events.iter().map(|event| event.raw.len()).sum();
+    while bytes > MAX_BUFFER_BYTES && !events.is_empty() {
+        let event = events.remove(0);
+        bytes = bytes.saturating_sub(event.raw.len());
+        dropped.push(event);
+    }
+    dropped
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+pub fn archive_path(cache_dir: &Path, canonical: &Path) -> PathBuf {
+    let key = canonical.to_string_lossy();
+    cache_dir.join(format!("stream-{:016x}.jsonl", fnv1a(key.as_bytes())))
+}
+
+fn write_archive(
+    path: &Path,
+    events: &[StreamEvent],
+    reset: bool,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).write(true);
+    if reset {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("could not secure {}: {error}", path.display()))?;
+    }
+    for event in events {
+        let line = serde_json::to_string(event)
+            .map_err(|error| format!("could not encode archived event: {error}"))?;
+        writeln!(file, "{line}")
+            .map_err(|error| format!("could not append {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn read_archive(
+    cache_dir: &Path,
+    path: &str,
+    before_line: u64,
+    limit: usize,
+) -> Result<StreamArchivePage, String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("could not resolve {path}: {error}"))?;
+    let archive = archive_path(cache_dir, &canonical);
+    if !archive.is_file() {
+        return Ok(StreamArchivePage {
+            events: Vec::new(),
+            has_more: false,
+        });
+    }
+    let limit = limit.clamp(1, 2000);
+    let file = File::open(&archive)
+        .map_err(|error| format!("could not read {}: {error}", archive.display()))?;
+    let reader = BufReader::new(file);
+    let mut events: VecDeque<StreamEvent> = VecDeque::new();
+    let mut has_more = false;
+    for line in reader.lines() {
+        let line = line.map_err(|error| format!("could not read stream archive: {error}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = match serde_json::from_str::<StreamEvent>(&line) {
+            Ok(event) => event,
+            Err(_) => continue,
+        };
+        if event.line >= before_line {
+            continue;
+        }
+        if events.len() == limit {
+            events.pop_front();
+            has_more = true;
+        }
+        events.push_back(event);
+    }
+    Ok(StreamArchivePage {
+        events: events.into_iter().collect(),
+        has_more,
+    })
+}
+
+pub fn remove_archive(cache_dir: &Path, path: &str) {
+    let Ok(canonical) = fs::canonicalize(path) else {
+        return;
+    };
+    let archive = archive_path(cache_dir, &canonical);
+    let _ = fs::remove_file(archive);
+}
+
 pub fn recent_from_snapshot(snapshot: &StreamSnapshot) -> RecentStream {
     RecentStream {
         path: snapshot.path.clone(),
@@ -286,13 +439,14 @@ fn process_change(
     compressed_pending: &mut Vec<u8>,
     decoded_pending: &mut Vec<u8>,
     event_buffer: &mut Vec<StreamEvent>,
+    cache_dir: &Path,
 ) -> Result<(), String> {
     let metadata = match fs::metadata(target) {
         Ok(metadata) => metadata,
         Err(err) => return Err(format!("could not stat {}: {err}", target.display())),
     };
     if metadata.len() < *offset {
-        let snapshot = read_snapshot(key)?;
+        let snapshot = read_snapshot_cached(key, cache_dir)?;
         *event_buffer = snapshot.events.clone();
         let _ = app.emit(
             "stream-live",
@@ -337,7 +491,11 @@ fn process_change(
 
     if !events.is_empty() {
         event_buffer.extend(events.iter().cloned());
-        trim_event_buffer(event_buffer);
+        let archive = archive_path(cache_dir, target);
+        let dropped = trim_event_buffer_collect(event_buffer);
+        if let Err(error) = write_archive(&archive, &dropped, false) {
+            eprintln!("could not append stream archive: {error}");
+        }
         let conversation = normalize_events(event_buffer);
         let audit = analyze(&conversation, key);
         let _ = app.emit(
@@ -514,6 +672,62 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name.as_deref(), Some("two"));
         assert_eq!(line_no, 2);
+    }
+
+    #[test]
+    fn archives_events_beyond_buffer_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("large.jsonl");
+        let cache_dir = temp.path().join("cache");
+        let mut text = String::new();
+        for index in 1..=MAX_BUFFER_EVENTS + 5 {
+            text.push_str(&format!(
+                "{{\"level\":\"info\",\"event\":\"event-{index}\"}}\n"
+            ));
+        }
+        fs::write(&path, text).expect("large stream");
+        let snapshot =
+            read_snapshot_cached(path.to_string_lossy().as_ref(), &cache_dir).expect("snapshot");
+        assert_eq!(snapshot.events.len(), MAX_BUFFER_EVENTS);
+        assert_eq!(snapshot.events[0].line, 6);
+
+        let page = read_archive(
+            &cache_dir,
+            path.to_string_lossy().as_ref(),
+            6,
+            500,
+        )
+        .expect("archive page");
+        assert_eq!(page.events.len(), 5);
+        assert_eq!(page.events[0].line, 1);
+        assert_eq!(page.events[4].line, 5);
+        assert!(!page.has_more);
+
+        let page = read_archive(
+            &cache_dir,
+            path.to_string_lossy().as_ref(),
+            6,
+            1,
+        )
+        .expect("bounded archive page");
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].line, 5);
+        assert!(page.has_more);
+
+        fs::write(
+            &path,
+            "{\"level\":\"info\",\"event\":\"short\"}\n",
+        )
+        .expect("truncated stream");
+        read_snapshot_cached(path.to_string_lossy().as_ref(), &cache_dir).expect("reset snapshot");
+        let page = read_archive(
+            &cache_dir,
+            path.to_string_lossy().as_ref(),
+            2,
+            500,
+        )
+        .expect("reset archive");
+        assert!(page.events.is_empty());
     }
 
     #[test]

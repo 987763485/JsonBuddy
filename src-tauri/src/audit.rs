@@ -1,11 +1,13 @@
 use crate::conversation::{Conversation, ToolCall};
-use crate::data::write_json;
+use crate::data::{now_iso, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Runtime};
+use uuid::Uuid;
 
 pub const AUDIT_LIMIT: usize = 500;
 
@@ -33,6 +35,33 @@ pub struct AuditEntry {
     pub blocked: bool,
     pub rule: String,
     pub line: u64,
+}
+
+impl AuditEntry {
+    pub fn app(
+        category: &str,
+        severity: &str,
+        label: &str,
+        target: String,
+        tool: &str,
+        blocked: bool,
+        rule: &str,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            path: "application".to_string(),
+            category: category.to_string(),
+            severity: severity.to_string(),
+            label: label.to_string(),
+            target,
+            tool: tool.to_string(),
+            session_id: Some("application".to_string()),
+            timestamp: Some(now_iso()),
+            blocked,
+            rule: rule.to_string(),
+            line: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,6 +109,7 @@ impl AuditConfig {
 
 pub struct AuditState {
     config: Mutex<AuditConfig>,
+    records: Mutex<Vec<AuditEntry>>,
     path: PathBuf,
 }
 
@@ -101,6 +131,7 @@ impl AuditState {
         };
         Ok(Self {
             config: Mutex::new(config),
+            records: Mutex::new(Vec::new()),
             path,
         })
     }
@@ -128,6 +159,37 @@ impl AuditState {
         Ok(next)
     }
 
+    pub fn record(&self, entry: AuditEntry) -> Result<Option<AuditEntry>, String> {
+        let enabled = self
+            .config
+            .lock()
+            .map(|config| {
+                config
+                    .categories
+                    .get(&entry.category)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !enabled {
+            return Ok(None);
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| "audit event state is unavailable".to_string())?;
+        records.insert(0, entry.clone());
+        records.truncate(AUDIT_LIMIT);
+        Ok(Some(entry))
+    }
+
+    pub fn entries(&self) -> Vec<AuditEntry> {
+        self.records
+            .lock()
+            .map(|records| records.clone())
+            .unwrap_or_default()
+    }
+
     /// Acknowledges an audit category, or a legacy event id.
     ///
     /// The audit panel sends the category so one acknowledgement covers
@@ -153,6 +215,16 @@ impl AuditState {
 
 fn write_config(path: &Path, config: &AuditConfig) -> Result<(), String> {
     write_json(path, config)
+}
+
+pub fn record_and_emit<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &AuditState,
+    entry: AuditEntry,
+) {
+    if let Ok(Some(entry)) = state.record(entry) {
+        let _ = app.emit("audit-entry", entry);
+    }
 }
 
 pub fn analyze(conversation: &Conversation, stream_path: &str) -> Vec<AuditEntry> {
@@ -507,6 +579,51 @@ mod tests {
         assert!(entries
             .iter()
             .all(|entry| entry.path == "/tmp/session.jsonl"));
+    }
+
+    #[test]
+    fn records_application_events_for_enabled_categories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = AuditState::new(temp.path()).expect("state");
+        let traversal = AuditEntry::app(
+            "traversal",
+            "critical",
+            "Directory traversal",
+            "../secret".to_string(),
+            "mock-route",
+            true,
+            "Rule: mock route path escapes its project mount.",
+        );
+        let stored = state.record(traversal).expect("record");
+        assert!(stored.is_some());
+        assert_eq!(state.entries().len(), 1);
+
+        let read = AuditEntry::app(
+            "read",
+            "info",
+            "File read",
+            "/tmp/a.json".to_string(),
+            "app",
+            false,
+            "Rule: file read inside the workspace.",
+        );
+        assert!(state.record(read).expect("disabled read").is_none());
+        assert_eq!(state.entries().len(), 1);
+
+        let mut categories = HashMap::new();
+        categories.insert("read".to_string(), true);
+        state.update_categories(categories).expect("enable read");
+        let read = AuditEntry::app(
+            "read",
+            "info",
+            "File read",
+            "/tmp/a.json".to_string(),
+            "app",
+            false,
+            "Rule: file read inside the workspace.",
+        );
+        assert!(state.record(read).expect("enabled read").is_some());
+        assert_eq!(state.entries().len(), 2);
     }
 
     #[test]
