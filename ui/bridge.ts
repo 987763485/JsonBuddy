@@ -1513,7 +1513,108 @@ function patchCompareFlow(): void {
   const originalSelect = w.selectCompareFile;
   const originalPick = w.pickCompareFile;
   const originalOpenCompare = w.openCompare;
-  let loadedDefaults = false;
+
+  const comparePlaceholder = (): string =>
+    viewLanguageIsZh() ? "选择文件" : "Choose a file";
+
+  const setCompareName = (id: string, name: string): void => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.textContent = name || comparePlaceholder();
+  };
+
+  const showCompareEmptyState = (docs: {
+    a: { name: string; text: string };
+    b: { name: string; text: string };
+  }): void => {
+    evalGlobal(
+      "compareChanges = []; compareLineCounts = { a: 0, b: 0 }; selectedChange = null; compareScrollLock = false;"
+    );
+    w.updateCompareLabels();
+    setCompareName("cmpFileFnameA", docs.a.name);
+    setCompareName("cmpFileFnameB", docs.b.name);
+    setCompareName("cmpPaneNameA", docs.a.name);
+    setCompareName("cmpPaneNameB", docs.b.name);
+    const bothEmpty = !docs.a.name && !docs.b.name;
+    const message = (side: "a" | "b"): string => {
+      if (docs[side].name) {
+        return viewLanguageIsZh()
+          ? `已选择 ${docs[side].name}，请选择另一侧文件。`
+          : `${docs[side].name} selected. Choose the other side to compare.`;
+      }
+      if (bothEmpty) {
+        return side === "a"
+          ? viewLanguageIsZh()
+            ? "选择 A 侧 JSON 文件开始对比。"
+            : "Choose a JSON file for side A to start comparing."
+          : viewLanguageIsZh()
+            ? "选择 B 侧 JSON 文件开始对比。"
+            : "Choose a JSON file for side B to start comparing.";
+      }
+      return side === "a"
+        ? viewLanguageIsZh()
+          ? "请选择 A 侧文件。"
+          : "Choose a file for side A."
+        : viewLanguageIsZh()
+          ? "请选择 B 侧文件。"
+          : "Choose a file for side B.";
+    };
+    for (const side of ["a", "b"] as const) {
+      const host = document.getElementById(side === "a" ? "codeA" : "codeB");
+      if (host) {
+        host.innerHTML = `<div class="tree-empty" style="padding:36px 24px;text-align:center;line-height:1.7">${w.escHtml(
+          message(side)
+        )}</div>`;
+      }
+    }
+    const changeList = document.getElementById("changeList");
+    if (changeList) {
+      changeList.innerHTML = `<div class="changes-empty">${
+        viewLanguageIsZh()
+          ? "选择两侧文件后显示差异。"
+          : "Choose both files to see their differences."
+      }</div>`;
+    }
+    for (const id of [
+      "changesCount",
+      "changesAllCount",
+      "changesModCount",
+      "changesAddCount",
+      "changesRemCount"
+    ]) {
+      w.setText?.(id, "0");
+    }
+    w.setText?.(
+      "changesFootCount",
+      viewLanguageIsZh() ? "等待选择文件" : "Waiting for files"
+    );
+    w.setText?.("cmpPath", "—");
+    w.setText?.(
+      "cmpToolbarDiffText",
+      viewLanguageIsZh() ? "选择文件后对比" : "Select files to compare"
+    );
+    w.setText?.(
+      "cmpStatusDiffText",
+      viewLanguageIsZh() ? "选择文件后对比" : "Select files to compare"
+    );
+    w.setText?.(
+      "cmpStatusFiles",
+      `${(docs.a.name ? 1 : 0) + (docs.b.name ? 1 : 0)}/2 ${
+        viewLanguageIsZh() ? "个文件" : "files"
+      }`
+    );
+    w.setText?.("cmpStatusLines", `0 ${viewLanguageIsZh() ? "行" : "lines"}`);
+    w.setText?.("cmpKind", viewLanguageIsZh() ? "选择文件" : "Select files");
+    const current = document.getElementById("cmpStatusDiff");
+    if (current) current.className = "status-pill";
+  };
+
+  // The compare workspace starts empty; files are only loaded when the user
+  // explicitly chooses them from either side's menu.
+  evalGlobal(
+    `compareDocs = { a: { name: "", text: "" }, b: { name: "", text: "" } }; compareFileNames.a = ""; compareFileNames.b = "";`
+  );
+  showCompareEmptyState(evalGlobal("compareDocs"));
 
   w.selectCompareFile = async (side: "a" | "b", name: string) => {
     const entry = compareRecents().find((item) => item.name === name);
@@ -1546,14 +1647,6 @@ function patchCompareFlow(): void {
   w.openCompare = () => {
     originalOpenCompare();
     renderCompareMenus();
-    if (!loadedDefaults) {
-      loadedDefaults = true;
-      const entries = compareRecents().filter((entry) => entry.path && entry.path !== "Local file");
-      if (entries.length >= 2) {
-        void loadCompareFile("a", entries[0].path, entries[0].name).catch(() => undefined);
-        void loadCompareFile("b", entries[1].path, entries[1].name).catch(() => undefined);
-      }
-    }
   };
 
   const originalHighlightJsonLine = w.highlightJsonLine;
@@ -1584,6 +1677,10 @@ function patchCompareFlow(): void {
     const docs = evalGlobal<{ a: { name: string; text: string }; b: { name: string; text: string } }>(
       "compareDocs"
     );
+    if (!docs.a.name || !docs.b.name) {
+      showCompareEmptyState(docs);
+      return;
+    }
     const linesA = docs.a.text.split("\n").length;
     const linesB = docs.b.text.split("\n").length;
     if (linesA > COMPARE_MAX_LINES || linesB > COMPARE_MAX_LINES) {
