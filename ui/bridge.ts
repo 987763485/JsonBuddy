@@ -206,6 +206,7 @@ monitorChromeStyle.textContent = `
   }
   .buddy-session-section.collapsed .buddy-session-head .i { transform: rotate(-90deg); }
   .buddy-session-body[hidden] { display: none !important; }
+  .audit-list .ai-action.ack { display: none !important; }
 `;
 document.head.appendChild(monitorChromeStyle);
 
@@ -1020,7 +1021,6 @@ const BUDDY_TOAST_ZH: Record<string, string> = {
   "Could not save settings": "无法保存设置",
   "Could not open compare file": "无法打开对比文件",
   "Could not save audit settings": "无法保存审计设置",
-  "Could not acknowledge audit event": "无法确认审计事件",
   "Could not save generated code": "无法保存生成的代码",
   "Could not generate code": "无法生成代码",
   "Could not build tree view": "无法生成树视图",
@@ -5381,7 +5381,6 @@ function installTrajectoryView(): void {
 let buddyAuditEntries: AuditEntry[] = [];
 let buddyAppAuditEntries: AuditEntry[] = [];
 let buddyAuditConfig: AuditConfig | null = null;
-let buddyAuditAck = new Set<string>();
 let buddyAuditActive = false;
 let buddyAuditSeverity = "all";
 let auditRenderTimer: number | null = null;
@@ -5468,14 +5467,11 @@ function auditItemRule(entry: AuditEntry): string {
 }
 
 function auditItemHtml(entry: AuditEntry, selected: boolean): string {
-  const acknowledged =
-    buddyAuditAck.has(entry.id) || buddyAuditAck.has(entry.category);
   const blocked = entry.blocked;
   const classes = [
     "audit-item",
     `sev-${entry.severity}`,
-    selected ? "sel" : "",
-    acknowledged ? "acked" : ""
+    selected ? "sel" : ""
   ]
     .filter(Boolean)
     .join(" ");
@@ -5507,15 +5503,6 @@ function auditItemHtml(entry: AuditEntry, selected: boolean): string {
         <button class="ai-action" onclick="event.stopPropagation(); selectAudit(this.closest('.audit-item')); openAuditSource()">${w.escHtml(
           auditUiText("View raw event", "查看原始事件")
         )}</button>
-        ${
-          acknowledged
-            ? `<button class="ai-action ack acked" disabled>${w.escHtml(
-                auditUiText("Acknowledged", "已确认")
-              )}</button>`
-            : `<button class="ai-action ack" data-ack-id="${w.escHtml(
-                entry.id
-              )}">${w.escHtml(auditUiText("Acknowledge", "确认"))}</button>`
-        }
         <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">${w.escHtml(
           auditUiText("Copy target", "复制目标")
         )}</button>
@@ -5556,13 +5543,6 @@ function renderAudit(): void {
   host.innerHTML = allAuditEntries()
     .map((entry, index) => auditItemHtml(entry, index === 0))
     .join("");
-  host.querySelectorAll<HTMLElement>("[data-ack-id]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const id = button.dataset.ackId;
-      if (id) void w.buddyAcknowledgeAudit(id, button);
-    });
-  });
   const categories = buddyAuditConfig?.categories ?? {};
   const enabled = Object.entries(categories)
     .filter(([, value]) => value)
@@ -5601,7 +5581,6 @@ function syncAuditSettingsChecks(): void {
 async function loadAuditConfig(): Promise<AuditConfig> {
   const config = await invoke<AuditConfig>("audit_config");
   buddyAuditConfig = config;
-  buddyAuditAck = new Set(config.acknowledged);
   syncAuditSettingsChecks();
   return config;
 }
@@ -5683,36 +5662,10 @@ function patchAuditFlow(): void {
         categories
       });
       buddyAuditConfig = config;
-      buddyAuditAck = new Set(config.acknowledged);
       w.closeAuditSettings?.();
       renderAudit();
     } catch (error) {
       toast("Could not save audit settings", String(error));
-    }
-  };
-
-  w.buddyAcknowledgeAudit = async (id: string, _button: HTMLElement) => {
-    const entry = allAuditEntries().find((candidate) => candidate.id === id);
-    const key = entry?.category || id;
-    try {
-      const config = await invoke<AuditConfig>("acknowledge_audit", {
-        id: key
-      });
-      buddyAuditConfig = config;
-      buddyAuditAck = new Set(config.acknowledged);
-      document
-        .querySelectorAll<HTMLElement>("#auditList .audit-item")
-        .forEach((item) => {
-          if (item.dataset.type !== entry?.category) return;
-          item.classList.add("acked");
-          const action = item.querySelector<HTMLButtonElement>(".ai-action.ack");
-          if (action) {
-            action.textContent = auditUiText("Acknowledged", "已确认");
-            action.disabled = true;
-          }
-        });
-    } catch (error) {
-      toast("Could not acknowledge audit event", String(error));
     }
   };
 
@@ -10686,7 +10639,6 @@ async function bootstrap(): Promise<void> {
     seedMockProjects(projects, serverStatus, requestLogs);
     buddyAuditConfig = auditConfig;
     buddyAppAuditEntries = Array.isArray(appAudit) ? appAudit : [];
-    buddyAuditAck = new Set(auditConfig.acknowledged);
     syncAuditSettingsChecks();
     w.renderFileMenuStreamRecents?.();
     w.openJsonToolRecents();
