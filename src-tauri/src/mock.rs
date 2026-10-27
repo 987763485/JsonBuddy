@@ -708,6 +708,7 @@ async fn handle_request(
     let started = std::time::Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or("").to_string();
     if method == Method::OPTIONS {
         return cors_response(StatusCode::NO_CONTENT, Body::empty());
     }
@@ -723,7 +724,7 @@ async fn handle_request(
         .map(|projects| projects.clone())
         .unwrap_or_default();
     let active = mounted_projects(projects, &mounted);
-    let matched = find_endpoint(&active, method.as_str(), &path);
+    let matched = find_endpoint(&active, method.as_str(), &path, &query);
     let Some((project, endpoint)) = matched else {
         let body = json!({
             "error": "No mock endpoint matched",
@@ -781,6 +782,7 @@ fn find_endpoint(
     projects: &[MockProject],
     method: &str,
     path: &str,
+    query: &str,
 ) -> Option<(MockProject, MockEndpoint)> {
     for project in projects {
         let base = format!("/{}", project.slug);
@@ -795,12 +797,77 @@ fn find_endpoint(
             if !endpoint.enabled || endpoint.method.to_uppercase() != method.to_uppercase() {
                 continue;
             }
-            if path_matches(&endpoint.path, rest) {
+            let (route, route_query) = endpoint
+                .path
+                .split_once('?')
+                .unwrap_or((endpoint.path.as_str(), ""));
+            if path_matches(route, rest) && query_matches(route_query, query) {
                 return Some((project.clone(), endpoint.clone()));
             }
         }
     }
     None
+}
+
+fn percent_decode_query(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let high = (bytes[index + 1] as char).to_digit(16);
+                let low = (bytes[index + 2] as char).to_digit(16);
+                if let (Some(high), Some(low)) = (high, low) {
+                    decoded.push((high * 16 + low) as u8);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn query_pairs(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (
+                percent_decode_query(key),
+                percent_decode_query(value),
+            )
+        })
+        .collect()
+}
+
+fn query_matches(pattern: &str, actual: &str) -> bool {
+    if pattern.trim().is_empty() {
+        return true;
+    }
+    let expected = query_pairs(pattern);
+    if expected.is_empty() {
+        return true;
+    }
+    let received = query_pairs(actual);
+    expected.iter().all(|(key, value)| {
+        received.iter().any(|(actual_key, actual_value)| {
+            actual_key == key
+                && (value.starts_with(':') || value == actual_value)
+        })
+    })
 }
 
 fn path_matches(pattern: &str, actual: &str) -> bool {
@@ -916,6 +983,38 @@ mod tests {
     }
 
     #[test]
+    fn matches_query_parameters() {
+        assert!(query_matches("", "page=2"));
+        assert!(query_matches("type=movie", "type=movie&page=2"));
+        assert!(query_matches("type=movie&page=2", "page=2&type=movie"));
+        assert!(query_matches("type=:kind", "type=movie"));
+        assert!(query_matches("name=Ada%20Lovelace", "name=Ada+Lovelace"));
+        assert!(!query_matches("type=movie", "type=show"));
+        assert!(!query_matches("type=movie", ""));
+    }
+
+    #[test]
+    fn finds_endpoint_with_query_pattern() {
+        let mut project = sample_project();
+        project.endpoints[0].path = "/movies?genre=:genre".to_string();
+        let (_, endpoint) = find_endpoint(
+            &[project],
+            "GET",
+            "/movies-api/movies",
+            "genre=drama&page=2",
+        )
+        .expect("query route");
+        assert_eq!(endpoint.path, "/movies?genre=:genre");
+        assert!(find_endpoint(
+            &[sample_project()],
+            "GET",
+            "/movies-api/movies",
+            ""
+        )
+        .is_some());
+    }
+
+    #[test]
     fn sanitizes_and_uniquifies_slugs() {
         assert_eq!(sanitize_slug(" My API / V1 "), "my-api-v1");
         let projects = vec![MockProject {
@@ -935,7 +1034,8 @@ mod tests {
     #[test]
     fn finds_mounted_endpoint() {
         let project = sample_project();
-        let (found, endpoint) = find_endpoint(&[project], "GET", "/movies-api/movies/tt1").expect("route");
+        let (found, endpoint) =
+            find_endpoint(&[project], "GET", "/movies-api/movies/tt1", "").expect("route");
         assert_eq!(found.slug, "movies-api");
         assert_eq!(endpoint.path, "/movies/:id");
     }
