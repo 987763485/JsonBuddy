@@ -1523,6 +1523,73 @@ function patchCompareFlow(): void {
     element.textContent = name || comparePlaceholder();
   };
 
+  const compareClearLabel = (): string =>
+    viewLanguageIsZh() ? "清除文件" : "Clear files";
+
+  const bWrap = document
+    .getElementById("cmpFileBtnB")
+    ?.closest<HTMLElement>(".cmp-file-wrap");
+  let compareClearButton: HTMLButtonElement | null = null;
+  if (bWrap && !document.getElementById("cmpClearBtn")) {
+    compareClearButton = document.createElement("button");
+    compareClearButton.id = "cmpClearBtn";
+    compareClearButton.type = "button";
+    compareClearButton.className = "tbtn icon-only";
+    compareClearButton.title = compareClearLabel();
+    compareClearButton.setAttribute("aria-label", compareClearLabel());
+    compareClearButton.innerHTML =
+      '<svg class="i sm" viewBox="0 0 24 24"><use href="#i-x"/></svg>';
+    bWrap.insertAdjacentElement("afterend", compareClearButton);
+  } else {
+    compareClearButton = document.getElementById(
+      "cmpClearBtn"
+    ) as HTMLButtonElement | null;
+  }
+
+  const updateCompareClearLabel = (): void => {
+    if (!compareClearButton) return;
+    compareClearButton.title = compareClearLabel();
+    compareClearButton.setAttribute("aria-label", compareClearLabel());
+  };
+
+  const clearCompareFiles = (): void => {
+    evalGlobal(
+      `compareDocs = { a: { name: "", text: "" }, b: { name: "", text: "" } };
+       compareFileNames.a = "";
+       compareFileNames.b = "";
+       compareKind = "structural";
+       compareIgnoreKeyOrder = true;
+       compareSyncScroll = true;
+       compareFoldAll = false;
+       compareWrap = false;
+       compareChangeFilter = "all";
+       selectedChange = null;
+       compareScrollLock = false;`
+    );
+    try {
+      w.closeCompareFileMenus();
+      w.closeCompareSearch?.("a");
+      w.closeCompareSearch?.("b");
+      w.applyCompareSettingsUI?.();
+      w.setCompareChangeFilter?.("all", null, false);
+    } catch {
+      // The compare view may not be mounted yet.
+    }
+    showCompareEmptyState(evalGlobal("compareDocs"));
+    for (const id of ["codeA", "codeB", "changeList"]) {
+      const host = document.getElementById(id);
+      if (host) {
+        host.scrollTop = 0;
+        host.scrollLeft = 0;
+      }
+    }
+    try {
+      document.getElementById("cmpFileBtnA")?.focus();
+    } catch {
+      // Focus is best-effort.
+    }
+  };
+
   const showCompareEmptyState = (docs: {
     a: { name: string; text: string };
     b: { name: string; text: string };
@@ -1608,6 +1675,18 @@ function patchCompareFlow(): void {
     const current = document.getElementById("cmpStatusDiff");
     if (current) current.className = "status-pill";
   };
+
+  if (compareClearButton) {
+    compareClearButton.addEventListener("click", clearCompareFiles);
+  }
+
+  const originalApplyCompareLanguage = w.applyLanguage;
+  if (typeof originalApplyCompareLanguage === "function") {
+    w.applyLanguage = (language: string) => {
+      originalApplyCompareLanguage(language);
+      updateCompareClearLabel();
+    };
+  }
 
   // The compare workspace starts empty; files are only loaded when the user
   // explicitly chooses them from either side's menu.
