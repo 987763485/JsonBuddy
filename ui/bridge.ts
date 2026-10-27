@@ -98,6 +98,53 @@ scrollbarStyle.textContent = `
 `;
 document.head.appendChild(scrollbarStyle);
 
+const splitterStyle = document.createElement("style");
+splitterStyle.id = "buddy-splitter-styles";
+splitterStyle.textContent = `
+  .splitter,
+  .cmp-splitter {
+    position: relative;
+    z-index: 2;
+    touch-action: none;
+  }
+  .splitter::before,
+  .cmp-splitter::before {
+    content: "";
+    position: absolute;
+    inset: 0 -3px;
+    cursor: col-resize;
+  }
+  body.buddy-splitting,
+  body.buddy-splitting * {
+    cursor: col-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+  }
+  body.buddy-splitting .editor {
+    transition: none !important;
+  }
+  body.buddy-splitting .splitter::after,
+  body.buddy-splitting .cmp-splitter::after {
+    background: var(--accent) !important;
+    height: 44px !important;
+    width: 2px !important;
+  }
+  .splitter:focus-visible,
+  .cmp-splitter:focus-visible {
+    outline: none;
+  }
+  .splitter:focus-visible::after,
+  .cmp-splitter:focus-visible::after {
+    background: var(--accent);
+    height: 44px;
+    width: 2px;
+  }
+  .app[data-view="text"] .editor {
+    flex: 1 1 auto !important;
+  }
+`;
+document.head.appendChild(splitterStyle);
+
 if (hasTauri) {
   // The prototype shrinks itself with CSS zoom to fit a browser stage.
   // In the desktop window it must render at 1:1 and fill the webview.
@@ -4637,6 +4684,333 @@ function installCodegen(): void {
   }
 }
 
+
+/* ------------------------------------------------------------
+   Panel splitters
+   ------------------------------------------------------------ */
+
+type SplitterSide = "left" | "right";
+
+interface SplitterState {
+  splitter: HTMLElement;
+  parent: HTMLElement;
+  prev: HTMLElement;
+  next: HTMLElement;
+  sized: HTMLElement;
+  side: SplitterSide;
+  min: number;
+  minOther: number;
+  preferred: number | null;
+  applied: number | null;
+  dragging: boolean;
+  frame: number | null;
+  pendingX: number;
+  observer: ResizeObserver | null;
+}
+
+let splittersInstalled = false;
+
+function splitterIsFixed(element: HTMLElement): boolean {
+  return (parseFloat(getComputedStyle(element).flexGrow) || 0) === 0;
+}
+
+function splitterSettings(
+  parent: HTMLElement,
+  prev: HTMLElement,
+  next: HTMLElement
+): { side: SplitterSide; min: number; minOther: number } {
+  if (parent.classList.contains("workspace-content")) {
+    return { side: "left", min: 300, minOther: 260 };
+  }
+  if (parent.classList.contains("compare-main")) {
+    return { side: "left", min: 220, minOther: 220 };
+  }
+  if (
+    parent.classList.contains("monitor-main") ||
+    parent.classList.contains("chat-main")
+  ) {
+    return { side: "right", min: 280, minOther: 340 };
+  }
+  const prevFixed = splitterIsFixed(prev);
+  const nextFixed = splitterIsFixed(next);
+  if (prevFixed && !nextFixed) return { side: "left", min: 200, minOther: 200 };
+  if (nextFixed && !prevFixed) return { side: "right", min: 200, minOther: 200 };
+  return { side: "left", min: 200, minOther: 200 };
+}
+
+function splitterFixedSiblings(state: SplitterState): number {
+  let width = 0;
+  for (const child of Array.from(state.parent.children)) {
+    if (
+      !(child instanceof HTMLElement) ||
+      child === state.prev ||
+      child === state.next ||
+      child === state.splitter
+    ) {
+      continue;
+    }
+    if (getComputedStyle(child).display === "none") continue;
+    if (splitterIsFixed(child)) width += child.getBoundingClientRect().width;
+  }
+  return width;
+}
+
+function splitterMaxSize(state: SplitterState): number {
+  const parentWidth = state.parent.clientWidth;
+  if (!parentWidth) return state.min;
+  const splitterWidth = state.splitter.getBoundingClientRect().width || 5;
+  const available =
+    parentWidth -
+    splitterWidth -
+    state.minOther -
+    splitterFixedSiblings(state);
+  return Math.max(state.min, Math.floor(available));
+}
+
+function splitterClamp(state: SplitterState, width: number): number {
+  return Math.max(
+    state.min,
+    Math.min(splitterMaxSize(state), Math.round(width))
+  );
+}
+
+function updateSplitterAria(
+  state: SplitterState,
+  width?: number,
+  max?: number
+): void {
+  const actual =
+    width ??
+    (state.applied ??
+      (state.sized.getBoundingClientRect().width || state.min));
+  state.splitter.setAttribute("aria-valuemin", String(state.min));
+  if (max != null) {
+    state.splitter.setAttribute("aria-valuemax", String(max));
+  }
+  state.splitter.setAttribute("aria-valuenow", String(Math.round(actual)));
+}
+
+function applySplitterWidth(
+  state: SplitterState,
+  width: number,
+  remember: boolean,
+  max?: number
+): void {
+  const rounded = Math.round(width);
+  state.applied = rounded;
+  if (remember) state.preferred = rounded;
+  state.sized.style.flex = `0 0 ${rounded}px`;
+  updateSplitterAria(state, rounded, max);
+}
+
+function refreshSplitterSize(state: SplitterState): void {
+  if (state.preferred == null) return;
+  if (!state.parent.clientWidth) return;
+  const width = splitterClamp(state, state.preferred);
+  if (width !== state.applied) applySplitterWidth(state, width, false);
+}
+
+function installSplitter(splitter: HTMLElement): void {
+  if (splitter.dataset.buddySplitter === "1") return;
+  const parent = splitter.parentElement;
+  const prev = splitter.previousElementSibling;
+  const next = splitter.nextElementSibling;
+  if (
+    !parent ||
+    !(prev instanceof HTMLElement) ||
+    !(next instanceof HTMLElement)
+  ) {
+    return;
+  }
+  const settings = splitterSettings(parent, prev, next);
+  const sized = settings.side === "left" ? prev : next;
+
+  splitter.dataset.buddySplitter = "1";
+  splitter.classList.add("buddy-splitter");
+  splitter.setAttribute("role", "separator");
+  splitter.setAttribute("aria-orientation", "vertical");
+  splitter.setAttribute(
+    "aria-label",
+    splitter.getAttribute("title") || "Resize panels"
+  );
+  if (!splitter.hasAttribute("tabindex")) splitter.tabIndex = 0;
+
+  const state: SplitterState = {
+    splitter,
+    parent,
+    prev,
+    next,
+    sized,
+    side: settings.side,
+    min: settings.min,
+    minOther: settings.minOther,
+    preferred: null,
+    applied: null,
+    dragging: false,
+    frame: null,
+    pendingX: 0,
+    observer: null
+  };
+  updateSplitterAria(state, undefined, splitterMaxSize(state));
+
+  if (typeof ResizeObserver !== "undefined") {
+    state.observer = new ResizeObserver(() => {
+      if (state.dragging || !state.parent.clientWidth) return;
+      refreshSplitterSize(state);
+      const rendered = state.sized.getBoundingClientRect().width;
+      updateSplitterAria(
+        state,
+        state.applied ?? (rendered > 0 ? rendered : undefined),
+        splitterMaxSize(state)
+      );
+    });
+    state.observer.observe(parent);
+    state.observer.observe(sized);
+  }
+
+  let drag:
+    | {
+        pointerId: number;
+        startX: number;
+        startSize: number;
+        max: number;
+      }
+    | null = null;
+
+  const applyPointer = () => {
+    if (!drag) return;
+    const delta = state.pendingX - drag.startX;
+    const raw =
+      state.side === "left"
+        ? drag.startSize + delta
+        : drag.startSize - delta;
+    const width = Math.max(state.min, Math.min(drag.max, Math.round(raw)));
+    if (width !== state.applied) {
+      applySplitterWidth(state, width, true, drag.max);
+    }
+  };
+
+  const finishDrag = (event?: PointerEvent) => {
+    if (!drag) return;
+    const pointerId = drag.pointerId;
+    if (state.frame != null) {
+      window.cancelAnimationFrame(state.frame);
+      state.frame = null;
+      applyPointer();
+    }
+    drag = null;
+    state.dragging = false;
+    splitter.classList.remove("buddy-splitter-active");
+    document.body.classList.remove("buddy-splitting");
+    if (event) {
+      try {
+        if (splitter.hasPointerCapture(pointerId)) {
+          splitter.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // The pointer may already have been released.
+      }
+    }
+    updateSplitterAria(
+      state,
+      state.applied ?? undefined,
+      splitterMaxSize(state)
+    );
+  };
+
+  splitter.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    if (!splitter.offsetParent) return;
+    event.preventDefault();
+    const current = sized.getBoundingClientRect().width;
+    if (current <= 0) return;
+    drag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startSize: current,
+      max: splitterMaxSize(state)
+    };
+    state.dragging = true;
+    state.pendingX = event.clientX;
+    splitter.classList.add("buddy-splitter-active");
+    document.body.classList.add("buddy-splitting");
+    try {
+      splitter.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic events and some embedded webviews cannot capture.
+    }
+  });
+
+  splitter.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if ((event.buttons & 1) === 0) {
+      finishDrag(event);
+      return;
+    }
+    event.preventDefault();
+    state.pendingX = event.clientX;
+    if (state.frame != null) return;
+    state.frame = window.requestAnimationFrame(() => {
+      state.frame = null;
+      applyPointer();
+    });
+  });
+
+  splitter.addEventListener("pointerup", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    finishDrag(event);
+  });
+  splitter.addEventListener("pointercancel", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    finishDrag(event);
+  });
+  splitter.addEventListener("lostpointercapture", () => finishDrag());
+  window.addEventListener("blur", () => finishDrag());
+
+  splitter.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (!splitter.offsetParent) return;
+    event.preventDefault();
+    const current =
+      state.applied ?? sized.getBoundingClientRect().width ?? state.min;
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const step = event.shiftKey ? 64 : 16;
+    const delta = state.side === "left" ? direction * step : -direction * step;
+    const max = splitterMaxSize(state);
+    applySplitterWidth(
+      state,
+      Math.max(state.min, Math.min(max, current + delta)),
+      true,
+      max
+    );
+  });
+
+  splitter.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    state.preferred = null;
+    state.applied = null;
+    sized.style.removeProperty("flex");
+    window.setTimeout(
+      () => updateSplitterAria(state, undefined, splitterMaxSize(state)),
+      260
+    );
+  });
+}
+
+function installSplitters(): void {
+  if (splittersInstalled) return;
+  splittersInstalled = true;
+  document
+    .querySelectorAll<HTMLElement>(".splitter, .cmp-splitter")
+    .forEach(installSplitter);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", installSplitters, { once: true });
+} else {
+  installSplitters();
+}
 
 /* ------------------------------------------------------------
    Import and export
