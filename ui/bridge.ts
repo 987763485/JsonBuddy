@@ -934,6 +934,8 @@ let buddyStreamSnapshot: StreamSnapshot | null = null;
 let buddyStreamEvents: StreamEvent[] = [];
 let buddyStreamFollowing: string | null = null;
 let buddyConversation: Conversation | null = null;
+let buddyStreamPending = 0;
+let buddyStreamScrollBound = false;
 let streamBridgeReady = false;
 
 function streamLineLabel(value: number): string {
@@ -1095,24 +1097,100 @@ function eventFields(event: StreamEvent): string[] {
 function renderRealStreamSource(live: boolean): void {
   const host = document.getElementById("streamCode");
   if (!host) return;
-  const visible = buddyStreamEvents.slice(-2000);
-  if (!visible.length) {
+  const total = buddyStreamEvents.length;
+  if (!total) {
     host.innerHTML =
       '<div class="stream-spacer" style="height:24px"></div><div class="stream-empty" style="padding:16px;color:var(--ink-3);font-size:10px">No events yet.</div>';
     return;
   }
-  const startLine = visible[0].line;
-  host.innerHTML = visible
-    .map((event, index) => {
-      const fresh = live && index >= visible.length - 3;
-      return `<div class="sl${fresh ? " new" : ""}"><span class="ln">${event.line}</span><span class="cl">${w.highlightJsonLine(
-        event.raw
-      )}</span></div>`;
-    })
-    .join("");
-  // Keep the source list bounded; the full file stays on disk.
-  if (startLine > 1) {
-    host.dataset.startLine = String(startLine);
+  const rowHtml = (event: StreamEvent, index: number, freshBase: number) => {
+    const fresh = live && index >= freshBase;
+    return `<div class="sl${fresh ? " new" : ""}"><span class="ln">${event.line}</span><span class="cl">${w.highlightJsonLine(
+      event.raw
+    )}</span></div>`;
+  };
+  if (host.classList.contains("wrap")) {
+    // Wrapped rows have variable height, so render the full buffer without
+    // a fixed-size virtual window.
+    host.innerHTML = buddyStreamEvents
+      .map((event, index) => rowHtml(event, index, total - 3))
+      .join("");
+    return;
+  }
+  const rowHeight = 23;
+  const paddingTop = 8;
+  const viewport = Math.max(120, host.clientHeight || 0);
+  const visibleCount = Math.ceil(viewport / rowHeight) + 24;
+  const scrollTop = host.scrollTop;
+  let start = Math.max(
+    0,
+    Math.floor((scrollTop - paddingTop) / rowHeight) - 12
+  );
+  let end = Math.min(total, start + visibleCount);
+  if (end - start < visibleCount) start = Math.max(0, end - visibleCount);
+  const top = start * rowHeight;
+  const bottom = Math.max(0, (total - end) * rowHeight);
+  host.innerHTML =
+    `<div class="buddy-stream-pad" style="height:${top}px;flex:0 0 auto"></div>` +
+    buddyStreamEvents
+      .slice(start, end)
+      .map((event, index) => rowHtml(event, start + index, total - 3))
+      .join("") +
+    `<div class="buddy-stream-pad" style="height:${bottom}px;flex:0 0 auto"></div>`;
+  host.dataset.windowStart = String(start);
+  host.dataset.windowEnd = String(end);
+}
+
+function streamNearBottom(host: HTMLElement | null): boolean {
+  if (!host) return true;
+  return host.scrollHeight - host.scrollTop - host.clientHeight < 56;
+}
+
+function scrollStreamToBottom(): void {
+  const host = document.getElementById("streamCode");
+  if (!host) return;
+  buddyStreamPending = 0;
+  host.scrollTop = host.scrollHeight;
+  renderRealStreamSource(!buddyStreamSnapshot ? false : !getStreamPaused());
+  const edge = document.getElementById("edgeText");
+  if (edge) edge.textContent = "Following live edge";
+}
+
+function getStreamPaused(): boolean {
+  try {
+    return evalGlobal<boolean>("getMonitorFile(activeMonitorFileId)?.paused ?? true");
+  } catch {
+    return true;
+  }
+}
+
+function bindStreamScroll(): void {
+  if (buddyStreamScrollBound) return;
+  const host = document.getElementById("streamCode");
+  if (!host) return;
+  buddyStreamScrollBound = true;
+  host.addEventListener("scroll", () => {
+    if (host.classList.contains("wrap")) return;
+    requestAnimationFrame(() => {
+      const live = !getStreamPaused();
+      if (streamNearBottom(host) && buddyStreamPending > 0) {
+        buddyStreamPending = 0;
+        const edge = document.getElementById("edgeText");
+        if (edge) edge.textContent = live ? "Following live edge" : "Paused · follow to resume";
+      }
+      renderRealStreamSource(live);
+    });
+  });
+  const edge = document.querySelector(".live-edge");
+  if (edge) {
+    (edge as HTMLElement).style.cursor = "pointer";
+    edge.addEventListener("click", () => {
+      if (getStreamPaused()) {
+        void w.toggleMonitorPause?.();
+      } else {
+        scrollStreamToBottom();
+      }
+    });
   }
 }
 
@@ -4366,6 +4444,13 @@ function patchStreamFlow(): void {
     updateRealStreamChrome(entry, false);
     renderConversation(false);
     renderAudit();
+    bindStreamScroll();
+    requestAnimationFrame(() => {
+      const host = document.getElementById("streamCode");
+      if (!host) return;
+      host.scrollTop = host.scrollHeight;
+      renderRealStreamSource(false);
+    });
   };
 
   w.openMonitorFile = async (id: string) => {
@@ -4425,6 +4510,7 @@ function patchStreamFlow(): void {
     renderRealStreamEvents(live);
     updateRealStreamChrome(file, live);
     renderConversation(live);
+    if (live) scrollStreamToBottom();
     if (live) {
       const code = document.getElementById("streamCode");
       if (code) requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
@@ -4442,6 +4528,7 @@ function patchStreamFlow(): void {
         buddyStreamSnapshot = null;
         buddyStreamEvents = [];
         buddyConversation = null;
+        buddyStreamPending = 0;
         buddyAuditEntries = [];
         buddyAuditActive = false;
       }
@@ -4449,6 +4536,27 @@ function patchStreamFlow(): void {
       toast("Could not remove stream", String(error));
     }
   };
+
+  const originalSetMonitorMode = w.setMonitorMode;
+  w.setMonitorMode = (mode: string) => {
+    originalSetMonitorMode(mode);
+    if (mode === "source") {
+      requestAnimationFrame(() => {
+        const host = document.getElementById("streamCode");
+        if (!host) return;
+        if (!getStreamPaused()) host.scrollTop = host.scrollHeight;
+        renderRealStreamSource(!getStreamPaused());
+      });
+    }
+  };
+
+  const originalWrap = w.toggleMonitorWrap;
+  w.toggleMonitorWrap = () => {
+    originalWrap?.();
+    renderRealStreamSource(!getStreamPaused());
+  };
+
+  bindStreamScroll();
 
   w.openMonitorRecents = () => {
     if (buddyStreamFollowing) {
@@ -4500,15 +4608,27 @@ function startStreamEventBridge(): void {
       scheduleAuditRender();
     }
     const code = document.getElementById("streamCode");
-    const nearBottom = code
-      ? code.scrollHeight - code.scrollTop - code.clientHeight < 50
-      : true;
+    const nearBottom = streamNearBottom(code);
     renderRealStreamSource(!file.paused);
     renderRealStreamEvents(!file.paused);
     updateRealStreamChrome(file, !file.paused);
     renderConversation(!file.paused);
     if (nearBottom && code) {
-      requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
+      buddyStreamPending = 0;
+      requestAnimationFrame(() => {
+        code.scrollTop = code.scrollHeight;
+        renderRealStreamSource(!file.paused);
+      });
+      const edge = document.getElementById("edgeText");
+      if (edge && !file.paused) edge.textContent = "Following live edge";
+    } else if (code) {
+      buddyStreamPending += payload.events.length;
+      const edge = document.getElementById("edgeText");
+      if (edge) {
+        edge.textContent = file.paused
+          ? "Paused · follow to resume"
+          : `${buddyStreamPending.toLocaleString("en-US")} new events · click to follow`;
+      }
     }
   });
   void listen<StreamErrorPayload>("stream-error", (event) => {
