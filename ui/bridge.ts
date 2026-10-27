@@ -557,6 +557,7 @@ document.head.appendChild(chatStyle);
 
 let editor: EditorView | null = null;
 let editorHost: HTMLDivElement | null = null;
+let editorDocumentText = "";
 let syncing = false;
 let chromeTimer: number | null = null;
 let buddyTrackedDoc: BridgeDoc | null = null;
@@ -804,7 +805,6 @@ function ensureEditor(): EditorView | null {
         extensions: [
           basicSetup,
           json(),
-          EditorView.lineWrapping,
           editorTheme,
           highlightCompartment.of(
             syntaxHighlighting(
@@ -819,9 +819,10 @@ function ensureEditor(): EditorView | null {
               updateJsonEditorStatus(update.state, update.docChanged);
             }
             if (!update.docChanged) return;
+            editorDocumentText = update.state.doc.toString();
             const active = currentDoc();
             if (!active) return;
-            active.text = update.state.doc.toString();
+            active.text = editorDocumentText;
             active.data = undefined;
             active.lineCount = update.state.doc.lines;
             active.sizeLabel = formatBytes(new Blob([active.text]).size);
@@ -845,6 +846,7 @@ function ensureEditor(): EditorView | null {
         ]
       })
     });
+    editorDocumentText = doc?.text ?? "";
   }
   return editor;
 }
@@ -854,7 +856,7 @@ function syncEditor(force = false): void {
   if (!view) return;
   const doc = currentDoc();
   const next = doc?.text ?? "";
-  const current = view.state.doc.toString();
+  const current = editorDocumentText;
   const documentChanged = doc !== buddyTrackedDoc;
   if (documentChanged) {
     flushPreviousDocument(doc);
@@ -864,17 +866,20 @@ function syncEditor(force = false): void {
     buddySavedVersion = buddyDocumentVersion;
     updateDocumentDirtyIndicator(doc);
   }
-  if (force || current !== next) {
+  if (current !== next) {
     syncing = true;
     view.dispatch({
-      changes: { from: 0, to: current.length, insert: next }
+      changes: { from: 0, to: view.state.doc.length, insert: next }
     });
     syncing = false;
-    if (!documentChanged && current !== next) {
+    editorDocumentText = next;
+    if (!documentChanged) {
       buddyDocumentVersion += 1;
       updateDocumentDirtyIndicator(doc);
       scheduleDocumentAutosave(doc);
     }
+    updateJsonEditorStatus(view.state, true);
+  } else if (force) {
     updateJsonEditorStatus(view.state, true);
   }
 }
@@ -995,13 +1000,13 @@ function scheduleJsonStatusValidation(state: EditorState): void {
   if (jsonStatusValidateTimer !== null) {
     window.clearTimeout(jsonStatusValidateTimer);
   }
-  const snapshot = state.doc.toString();
   jsonStatusValidateTimer = window.setTimeout(() => {
     jsonStatusValidateTimer = null;
     const pill = document.querySelector<HTMLElement>(
       ".status-normal .status-pill"
     );
     if (!pill) return;
+    const snapshot = state.doc.toString();
     let valid = true;
     try {
       JSON.parse(snapshot);
@@ -1013,19 +1018,27 @@ function scheduleJsonStatusValidation(state: EditorState): void {
   }, 300);
 }
 
-function updateStatusIndentation(text: string): void {
+function updateStatusIndentation(state: EditorState): void {
   const items = document.querySelectorAll<HTMLElement>(
     ".status-normal .status-right .status-item"
   );
   const item = items[4];
   if (!item) return;
-  const firstIndented = text.split(/\r?\n/).find((line) => /^[ \t]+\S/.test(line));
+  let indented: string | null = null;
+  const limit = Math.min(state.doc.lines, 5000);
+  for (let lineNumber = 1; lineNumber <= limit; lineNumber += 1) {
+    const line = state.doc.line(lineNumber).text;
+    if (/^[ \t]+\S/.test(line)) {
+      indented = line;
+      break;
+    }
+  }
   const zh = viewLanguageIsZh();
-  if (firstIndented?.startsWith("\t")) {
+  if (indented?.startsWith("\t")) {
     item.textContent = zh ? "制表符" : "Tabs";
     return;
   }
-  const width = firstIndented ? (/^ +/.exec(firstIndented)?.[0].length ?? 2) : 2;
+  const width = indented ? (/^ +/.exec(indented)?.[0].length ?? 2) : 2;
   item.textContent = zh ? `空格: ${width}` : `Spaces: ${width}`;
 }
 
@@ -1057,12 +1070,51 @@ function updateJsonEditorStatus(state: EditorState, validate: boolean): void {
       : `Ln ${line.number}, Col ${column}`;
   const segments = jsonPathAtCursor(state);
   renderJsonStatusPath(segments, jsonPathText(segments));
-  updateStatusIndentation(state.doc.toString());
-  if (validate) scheduleJsonStatusValidation(state);
+  if (validate) {
+    updateStatusIndentation(state);
+    scheduleJsonStatusValidation(state);
+  }
+}
+
+function findDocumentLineForEntry(entry: any): number {
+  const doc = currentDoc();
+  const lines = (doc?.text ?? "").split(/\r?\n/);
+  if (!lines.length) return 0;
+  const key = entry?.key || "";
+  const keyToken = key ? `"${key}"` : "";
+  let hint = entry?.kind === "value" ? entry.label : "";
+  if (entry?.kind === "key" && entry.path) {
+    let data: unknown;
+    try {
+      data = JSON.parse(doc?.text ?? "");
+    } catch {
+      data = undefined;
+    }
+    const value = w.jsonValueAtPath?.(data, entry.path);
+    if (value !== undefined) hint = w.compareValueLabel?.(value) ?? hint;
+  }
+  const hintUsable = hint && hint.length <= 60;
+  let firstKey = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (keyToken && !line.includes(keyToken)) continue;
+    if (keyToken && !firstKey) firstKey = index + 1;
+    if (hintUsable && !line.includes(hint)) continue;
+    return index + 1;
+  }
+  if (firstKey) return firstKey;
+  if (hintUsable) {
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(hint)) return index + 1;
+    }
+  }
+  return 0;
 }
 
 function patchSearchReveal(): void {
   const originalJump = w.jumpToJsonSearchResult;
+  const originalReveal = w.revealInspectorInSource;
+  w.findJsonSearchLine = (entry: any) => findDocumentLineForEntry(entry);
   w.jumpToJsonSearchResult = (index: number) => {
     originalJump(index);
     try {
@@ -1070,6 +1122,15 @@ function patchSearchReveal(): void {
       if (typeof line === "number") focusEditorLine(line);
     } catch {
       // Search state is owned by the prototype.
+    }
+  };
+  w.revealInspectorInSource = () => {
+    originalReveal();
+    try {
+      const line = evalGlobal<number | null>("editorFocusLine");
+      if (typeof line === "number") focusEditorLine(line);
+    } catch {
+      // The source view may be closing.
     }
   };
 }
@@ -1089,8 +1150,13 @@ function patchDocumentFunctions(): void {
     return originalDocumentLineCount(doc);
   };
   w.renderCode = () => {
-    originalRenderCode();
-    syncEditor(true);
+    // The prototype renders every source line into #code, which is hidden in
+    // the desktop build and can block the UI for seconds on large documents.
+    // CodeMirror is the visible editor, so only keep the hidden host empty and
+    // sync its document instead.
+    const code = document.getElementById("code");
+    if (code) code.replaceChildren();
+    syncEditor(false);
     try {
       const line = evalGlobal<number | null>("editorFocusLine");
       if (typeof line === "number") focusEditorLine(line);
@@ -1236,7 +1302,7 @@ function installDocument(doc: JsonDocument): void {
     w.renderToolFileMenu?.();
     w.renderFileMenuJsonRecents?.();
     renderCompareMenus();
-    syncEditor(true);
+    syncEditor(false);
   } catch (error) {
     console.error("could not install document", error);
   }
@@ -7922,7 +7988,7 @@ function patchJsonDocumentFlow(): void {
     if (!item) return;
     if (!item.path || item.path === "Local file" || item.path === "Not saved yet") {
       originalOpenJsonToolFile(id);
-      syncEditor(true);
+      syncEditor(false);
       return;
     }
     try {
