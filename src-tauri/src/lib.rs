@@ -269,13 +269,37 @@ fn acknowledge_audit(state: State<'_, AppState>, id: String) -> Result<AuditConf
 }
 
 #[tauri::command]
+fn set_mock_runtime_response(
+    state: State<'_, AppState>,
+    project_id: String,
+    endpoint_id: String,
+    response: Option<serde_json::Value>,
+) -> Result<(), String> {
+    state
+        .mock
+        .set_runtime_response(&project_id, &endpoint_id, response)
+}
+
+#[tauri::command]
 fn start_mock_server(app: AppHandle, state: State<'_, AppState>) -> Result<MockServerStatus, String> {
-    state.mock.start_server(app)
+    state.mock.start_server(app)?;
+    Ok(state.mock.status())
 }
 
 #[tauri::command]
 fn stop_mock_server(state: State<'_, AppState>) -> Result<MockServerStatus, String> {
-    state.mock.stop_server()
+    state.mock.stop_server()?;
+    Ok(state.mock.status())
+}
+
+#[tauri::command]
+fn set_mock_project_running(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    running: bool,
+) -> Result<MockServerStatus, String> {
+    state.mock.set_project_running(app, &project_id, running)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -330,7 +354,9 @@ pub fn run() {
             update_audit_categories,
             acknowledge_audit,
             start_mock_server,
-            stop_mock_server
+            stop_mock_server,
+            set_mock_project_running,
+            set_mock_runtime_response
         ])
         .run(tauri::generate_context!())
         .expect("error while running JSON Buddy");

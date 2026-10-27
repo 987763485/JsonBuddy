@@ -4,7 +4,7 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。搜索跳转、Mock 生成上限、导入导出、OpenAPI 导入与流缓冲虚拟列表均已接入；当前继续做边界校验、兼容性回归与文档同步。
+当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。搜索跳转、Mock 生成上限、导入导出、OpenAPI 导入、流缓冲虚拟列表、动态状态栏、剪贴板与字体打包、运行时 Mock 生成均已接入；当前继续做边界校验、兼容性回归与文档同步。
 
 ## 模块进度
 
@@ -14,15 +14,18 @@
 - [x] JSON 流桥接：快照、跟随、暂停、删除、实时事件与统计渲染
 - [x] JSON 流对话视图：Rust 语义归一化、会话卡片、模型切换、工具调用与只读状态
 - [x] 流缓冲虚拟列表：固定行高窗口渲染、滚动窗口更新、贴底跟随、脱离时新事件计数与一键回到底部、自动换行回退
-- [x] JSON Mock：项目/端点持久化、响应 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 服务启停
-- [x] Mock 导入：JSON Schema 与 OpenAPI 3.x / Swagger 2.0（JSON、YAML）；保留方法、路径与内联示例响应，支持基础路径、追加/替换，跳过项写入导入报告，1,000 定义上限
+- [x] JSON Mock：项目/端点持久化、项目独立启停与路由挂载/卸载、响应 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 服务启停、运行时长与总请求数、生成数据仅保存在运行期
+- [x] Mock 导入：JSON Schema 与 OpenAPI 3.x / Swagger 2.0（JSON、YAML）；保留方法、路径与内联示例响应，支持基础路径、追加/替换，跳过项写入导入报告，远程 `$ref` 拒绝、1,000 定义上限、导入来源随接口持久化
+- [x] Mock 导出：JSON Schema 使用单文件 `$defs`，OpenAPI 3.1 使用内联响应 Schema 与示例，原生保存与剪贴板复制
 - [x] 审计：Rust 策略模块、严格分类、500 条上限、设置持久化、按类别复用确认、真实审计面板
 - [x] 树视图：第六种视图、节点展开/折叠、筛选、路径检查器、复制路径与跳转源码
 - [x] 表格视图：真实 JSON 驱动、数组/对象分节、列选择、行筛选、单元格检查器与源码定位
 - [x] 图形视图：真实 JSON 节点/边、缩放/拖拽/布局切换、迷你地图与空/错误状态
 - [x] 代码生成：TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart、JSON Schema
 - [x] 导入导出：CSV / JSON / JSONL 导入；CSV、Excel、Mock 与生成代码原生保存导出
-- [x] JSON 搜索与生成限制：结果计数与编辑器定位；Mock 生成默认 100 条、上限 1,000 条
+- [x] JSON 搜索与生成限制：结果计数与编辑器定位；Mock 生成默认 100 条、上限 1,000 条，生成数据不写入项目文件
+- [x] 状态栏与本地化：有效/无效 JSON、行号列号、光标 JSON 路径（可复制）、保留缓冲；树/表/图、对话、审计、代码生成与 OpenAPI 导入动态文案随语言切换
+- [x] 桌面集成：Tauri 剪贴板插件、Inter / JetBrains Mono 字体打包、Mock 依赖真实请求计数
 
 ## 我的角色
 

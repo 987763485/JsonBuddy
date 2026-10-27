@@ -8,13 +8,14 @@ use axum_server::tls_rustls::RustlsConfig;
 use axum_server::Handle;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
@@ -32,6 +33,11 @@ pub struct MockEndpoint {
     pub enabled: bool,
     #[serde(default)]
     pub response: Value,
+    #[serde(default)]
+    pub imported_from: Option<String>,
+    /// Generated data for the current session. Never written to project files.
+    #[serde(skip)]
+    pub runtime_response: Option<Value>,
 }
 
 fn default_enabled() -> bool {
@@ -62,6 +68,14 @@ fn default_schema_count() -> u32 {
     1
 }
 
+fn valid_project_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MockServerStatus {
@@ -69,6 +83,12 @@ pub struct MockServerStatus {
     pub port: u16,
     pub https: bool,
     pub url: String,
+    #[serde(default)]
+    pub uptime_seconds: u64,
+    #[serde(default)]
+    pub total_requests: u64,
+    #[serde(default)]
+    pub running_projects: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,6 +106,8 @@ pub struct MockRequestLog {
 pub struct MockState {
     projects: Arc<RwLock<Vec<MockProject>>>,
     logs: Arc<RwLock<Vec<MockRequestLog>>>,
+    requests: Arc<AtomicU64>,
+    running_projects: Arc<RwLock<HashSet<String>>>,
     server: Mutex<Option<MockServerHandle>>,
     projects_dir: PathBuf,
     certs_dir: PathBuf,
@@ -96,15 +118,20 @@ pub struct MockState {
 struct MockServerHandle {
     port: u16,
     https: bool,
+    started: Instant,
     handle: Handle<SocketAddr>,
     join: Option<JoinHandle<()>>,
 }
+
+type MockEmitter = Arc<dyn Fn(MockRequestLog) + Send + Sync>;
 
 #[derive(Clone)]
 struct ServerCtx {
     projects: Arc<RwLock<Vec<MockProject>>>,
     logs: Arc<RwLock<Vec<MockRequestLog>>>,
-    app: AppHandle,
+    requests: Arc<AtomicU64>,
+    running_projects: Arc<RwLock<HashSet<String>>>,
+    emit: MockEmitter,
 }
 
 impl MockServerHandle {
@@ -118,6 +145,9 @@ impl MockServerHandle {
                 if self.https { "https" } else { "http" },
                 self.port
             ),
+            uptime_seconds: self.started.elapsed().as_secs(),
+            total_requests: 0,
+            running_projects: Vec::new(),
         }
     }
 
@@ -140,6 +170,8 @@ impl MockState {
         Ok(Self {
             projects: Arc::new(RwLock::new(projects)),
             logs: Arc::new(RwLock::new(Vec::new())),
+            requests: Arc::new(AtomicU64::new(0)),
+            running_projects: Arc::new(RwLock::new(HashSet::new())),
             server: Mutex::new(None),
             projects_dir: paths.mock_projects.clone(),
             certs_dir: paths.mock_certs.clone(),
@@ -167,7 +199,43 @@ impl MockState {
             .unwrap_or_default()
     }
 
+    fn running_project_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .running_projects
+            .read()
+            .map(|projects| projects.iter().cloned().collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    pub fn set_runtime_response(
+        &self,
+        project_id: &str,
+        endpoint_id: &str,
+        response: Option<Value>,
+    ) -> Result<(), String> {
+        let mut projects = self
+            .projects
+            .write()
+            .map_err(|_| "mock projects state is unavailable".to_string())?;
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| format!("mock project not found: {project_id}"))?;
+        let endpoint = project
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.id == endpoint_id)
+            .ok_or_else(|| format!("mock endpoint not found: {endpoint_id}"))?;
+        endpoint.runtime_response = response;
+        Ok(())
+    }
+
     pub fn save_project(&self, mut project: MockProject) -> Result<MockProject, String> {
+        if !valid_project_id(&project.id) {
+            return Err("invalid mock project id".to_string());
+        }
         project.slug = sanitize_slug(&project.slug);
         if project.slug.is_empty() {
             project.slug = sanitize_slug(&project.name);
@@ -182,6 +250,17 @@ impl MockState {
             .write()
             .map_err(|_| "mock projects state is unavailable".to_string())?;
         project.slug = unique_slug(&projects, &project.slug, Some(&project.id));
+        if let Some(existing) = projects.iter().find(|item| item.id == project.id) {
+            for endpoint in &mut project.endpoints {
+                if let Some(previous) = existing
+                    .endpoints
+                    .iter()
+                    .find(|item| item.id == endpoint.id)
+                {
+                    endpoint.runtime_response = previous.runtime_response.clone();
+                }
+            }
+        }
         if let Some(existing) = projects.iter_mut().find(|item| item.id == project.id) {
             *existing = project.clone();
         } else {
@@ -232,6 +311,9 @@ impl MockState {
     }
 
     pub fn delete_project(&self, id: &str) -> Result<(), String> {
+        if !valid_project_id(id) {
+            return Err("invalid mock project id".to_string());
+        }
         let mut projects = self
             .projects
             .write()
@@ -242,13 +324,28 @@ impl MockState {
             fs::remove_file(&path)
                 .map_err(|error| format!("could not delete {}: {error}", path.display()))?;
         }
+        drop(projects);
+        let mut mounted = self
+            .running_projects
+            .write()
+            .map_err(|_| "mock running projects state is unavailable".to_string())?;
+        let was_mounted = mounted.remove(id);
+        let empty = mounted.is_empty();
+        drop(mounted);
+        if was_mounted && empty {
+            self.stop_server()?;
+        }
         Ok(())
     }
 
     pub fn status(&self) -> MockServerStatus {
+        let total_requests = self.requests.load(Ordering::SeqCst);
         if let Ok(server) = self.server.lock() {
             if let Some(server) = server.as_ref() {
-                return server.status();
+                let mut status = server.status();
+                status.total_requests = total_requests;
+                status.running_projects = self.running_project_ids();
+                return status;
             }
         }
         let port = self.port.load(Ordering::SeqCst);
@@ -262,7 +359,50 @@ impl MockState {
                 if https { "https" } else { "http" },
                 port
             ),
+            uptime_seconds: 0,
+            total_requests,
+            running_projects: Vec::new(),
         }
+    }
+
+    pub fn set_project_running(
+        &self,
+        app: AppHandle,
+        project_id: &str,
+        running: bool,
+    ) -> Result<MockServerStatus, String> {
+        let exists = self
+            .projects
+            .read()
+            .map(|projects| projects.iter().any(|project| project.id == project_id))
+            .unwrap_or(false);
+        if !exists {
+            return Err(format!("mock project not found: {project_id}"));
+        }
+        let mut mounted = self
+            .running_projects
+            .write()
+            .map_err(|_| "mock running projects state is unavailable".to_string())?;
+        if running {
+            mounted.insert(project_id.to_string());
+            drop(mounted);
+            let has_server = self
+                .server
+                .lock()
+                .map(|server| server.is_some())
+                .unwrap_or(false);
+            if !has_server {
+                self.start_server(app)?;
+            }
+        } else {
+            mounted.remove(project_id);
+            let empty = mounted.is_empty();
+            drop(mounted);
+            if empty {
+                self.stop_server()?;
+            }
+        }
+        Ok(self.status())
     }
 
     pub fn start_server(&self, app: AppHandle) -> Result<MockServerStatus, String> {
@@ -283,10 +423,16 @@ impl MockState {
 
         let projects = self.projects.clone();
         let logs = self.logs.clone();
+        let requests = self.requests.clone();
+        let running_projects = self.running_projects.clone();
+        self.requests.store(0, Ordering::SeqCst);
         if let Ok(mut entries) = logs.write() {
             entries.clear();
         }
-        let app_handle = app.clone();
+        let emitter_app = app.clone();
+        let emit: MockEmitter = Arc::new(move |entry| {
+            let _ = emitter_app.emit("mock-request", entry);
+        });
         let certs = self.certs_dir.clone();
         let handle = Handle::<SocketAddr>::new();
         let server_handle = handle.clone();
@@ -307,7 +453,9 @@ impl MockState {
                     .with_state(ServerCtx {
                         projects,
                         logs,
-                        app: app_handle,
+                        requests,
+                        running_projects,
+                        emit,
                     });
                 let result = if https {
                     match tls_config(&certs).await {
@@ -351,6 +499,7 @@ impl MockState {
         let server = MockServerHandle {
             port,
             https,
+            started: Instant::now(),
             handle,
             join: Some(join),
         };
@@ -360,12 +509,14 @@ impl MockState {
     }
 
     pub fn stop_server(&self) -> Result<MockServerStatus, String> {
-        let mut guard = self
-            .server
-            .lock()
-            .map_err(|_| "mock server state is unavailable".to_string())?;
-        if let Some(mut server) = guard.take() {
-            server.stop();
+        {
+            let mut guard = self
+                .server
+                .lock()
+                .map_err(|_| "mock server state is unavailable".to_string())?;
+            if let Some(mut server) = guard.take() {
+                server.stop();
+            }
         }
         Ok(self.status())
     }
@@ -386,7 +537,20 @@ pub fn load_projects(directory: &Path) -> Result<Vec<MockProject>, String> {
         let text = fs::read_to_string(&path)
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;
         match serde_json::from_str::<MockProject>(&text) {
-            Ok(project) => projects.push(project),
+            Ok(project) => {
+                if !valid_project_id(&project.id) {
+                    eprintln!("skipping mock project with invalid id: {}", path.display());
+                    continue;
+                }
+                if projects
+                    .iter()
+                    .any(|existing: &MockProject| existing.id == project.id)
+                {
+                    eprintln!("skipping duplicate mock project id: {}", path.display());
+                    continue;
+                }
+                projects.push(project);
+            }
             Err(error) => eprintln!("skipping mock project {}: {error}", path.display()),
         }
     }
@@ -395,6 +559,9 @@ pub fn load_projects(directory: &Path) -> Result<Vec<MockProject>, String> {
 }
 
 pub fn save_project_file(directory: &Path, project: &MockProject) -> Result<(), String> {
+    if !valid_project_id(&project.id) {
+        return Err("invalid mock project id".to_string());
+    }
     fs::create_dir_all(directory)
         .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
     write_json(&directory.join(format!("{}.json", project.id)), project)
@@ -437,6 +604,8 @@ fn sample_project() -> MockProject {
                     ],
                     "meta": { "count": 2, "source": "mock" }
                 }),
+                imported_from: None,
+                runtime_response: None,
             },
             MockEndpoint {
                 id: "movies-get".to_string(),
@@ -452,6 +621,8 @@ fn sample_project() -> MockProject {
                     "year": 2011,
                     "rating": 9.2
                 }),
+                imported_from: None,
+                runtime_response: None,
             },
             MockEndpoint {
                 id: "movies-create".to_string(),
@@ -465,6 +636,8 @@ fn sample_project() -> MockProject {
                     "id": "tt-new",
                     "title": "New movie"
                 }),
+                imported_from: None,
+                runtime_response: None,
             },
         ],
     }
@@ -504,6 +677,23 @@ fn unique_slug(projects: &[MockProject], base: &str, exclude: Option<&str>) -> S
     candidate
 }
 
+fn mounted_projects(
+    projects: Vec<MockProject>,
+    running: &HashSet<String>,
+) -> Vec<MockProject> {
+    projects
+        .into_iter()
+        .filter(|project| running.contains(&project.id))
+        .collect()
+}
+
+fn effective_response(endpoint: &MockEndpoint) -> &Value {
+    endpoint
+        .runtime_response
+        .as_ref()
+        .unwrap_or(&endpoint.response)
+}
+
 async fn handle_request(
     State(ctx): State<ServerCtx>,
     request: Request<Body>,
@@ -514,12 +704,19 @@ async fn handle_request(
     if method == Method::OPTIONS {
         return cors_response(StatusCode::NO_CONTENT, Body::empty());
     }
+    ctx.requests.fetch_add(1, Ordering::SeqCst);
+    let mounted = ctx
+        .running_projects
+        .read()
+        .map(|projects| projects.clone())
+        .unwrap_or_default();
     let projects = ctx
         .projects
         .read()
         .map(|projects| projects.clone())
         .unwrap_or_default();
-    let matched = find_endpoint(&projects, method.as_str(), &path);
+    let active = mounted_projects(projects, &mounted);
+    let matched = find_endpoint(&active, method.as_str(), &path);
     let Some((project, endpoint)) = matched else {
         let body = json!({
             "error": "No mock endpoint matched",
@@ -539,7 +736,7 @@ async fn handle_request(
             logs.insert(0, entry.clone());
             logs.truncate(200);
         }
-        let _ = ctx.app.emit("mock-request", entry);
+        (ctx.emit)(entry);
         return cors_response(
             StatusCode::NOT_FOUND,
             Body::from(serde_json::to_vec(&body).unwrap_or_default()),
@@ -553,7 +750,8 @@ async fn handle_request(
     let body = if status == StatusCode::NO_CONTENT {
         Vec::new()
     } else {
-        serde_json::to_vec(&endpoint.response).unwrap_or_else(|_| b"null".to_vec())
+        serde_json::to_vec(effective_response(&endpoint))
+            .unwrap_or_else(|_| b"null".to_vec())
     };
     let entry = MockRequestLog {
         project_id: project.id.clone(),
@@ -568,7 +766,7 @@ async fn handle_request(
         logs.insert(0, entry.clone());
         logs.truncate(200);
     }
-    let _ = ctx.app.emit("mock-request", entry);
+    (ctx.emit)(entry);
     cors_response(status, Body::from(body))
 }
 
@@ -616,7 +814,7 @@ fn cors_response(status: StatusCode, body: Body) -> Response {
     headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        "GET,POST,PUT,PATCH,DELETE,OPTIONS".parse().unwrap(),
+        "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS".parse().unwrap(),
     );
     headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "*".parse().unwrap());
     if status != StatusCode::NO_CONTENT {
@@ -653,6 +851,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn axum_server_accepts_a_nonblocking_listener() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let address = listener.local_addr().expect("address");
+        let handle = Handle::<SocketAddr>::new();
+        let shutdown = handle.clone();
+        let join = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async move {
+                let router = Router::new().route("/", axum::routing::get(|| async { "ok" }));
+                if let Ok(server) = axum_server::from_tcp(listener) {
+                    let _ = server
+                        .handle(shutdown)
+                        .serve(router.into_make_service())
+                        .await;
+                }
+            });
+        });
+
+        let mut stream = None;
+        for _ in 0..60 {
+            if let Ok(connection) = TcpStream::connect(address) {
+                stream = Some(connection);
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let mut stream = stream.expect("server should accept connections");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("write");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read");
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.ends_with("ok"));
+
+        handle.graceful_shutdown(Some(Duration::from_millis(50)));
+        join.join().expect("server thread");
+    }
+
+    #[test]
     fn matches_path_parameters() {
         assert!(path_matches("/movies", "/movies"));
         assert!(path_matches("/movies/:id", "/movies/42"));
@@ -683,6 +931,170 @@ mod tests {
         let (found, endpoint) = find_endpoint(&[project], "GET", "/movies-api/movies/tt1").expect("route");
         assert_eq!(found.slug, "movies-api");
         assert_eq!(endpoint.path, "/movies/:id");
+    }
+
+    #[tokio::test]
+    async fn mounted_routes_use_runtime_responses() {
+        let project = sample_project();
+        let project_id = project.id.clone();
+        let projects = Arc::new(RwLock::new(vec![project]));
+        let logs = Arc::new(RwLock::new(Vec::new()));
+        let requests = Arc::new(AtomicU64::new(0));
+        let running = Arc::new(RwLock::new(HashSet::from([project_id.clone()])));
+        let ctx = ServerCtx {
+            projects: projects.clone(),
+            logs: logs.clone(),
+            requests: requests.clone(),
+            running_projects: running.clone(),
+            emit: Arc::new(|_| {}),
+        };
+        let request = || {
+            Request::builder()
+                .method("GET")
+                .uri("/movies-api/movies")
+                .body(Body::empty())
+                .expect("request")
+        };
+
+        let response = handle_request(axum::extract::State(ctx.clone()), request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert!(text.contains("Game of Thrones"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(logs.read().expect("logs").len(), 1);
+
+        projects.write().expect("projects")[0].endpoints[0].runtime_response =
+            Some(json!({ "runtime": true }));
+        let response = handle_request(axum::extract::State(ctx.clone()), request()).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert!(text.contains("\"runtime\":true"));
+
+        running.write().expect("running").clear();
+        let response = handle_request(axum::extract::State(ctx), request()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn only_running_projects_are_mounted() {
+        let project = sample_project();
+        let id = project.id.clone();
+        assert!(mounted_projects(vec![project.clone()], &HashSet::new()).is_empty());
+        let running: HashSet<String> = [id].into_iter().collect();
+        let active = mounted_projects(vec![project], &running);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "mock-movies");
+    }
+
+    #[test]
+    fn runtime_response_overrides_static_response() {
+        let mut endpoint = sample_project().endpoints.remove(0);
+        assert_eq!(effective_response(&endpoint), &endpoint.response);
+        endpoint.runtime_response = Some(json!([{ "id": "live" }]));
+        assert_eq!(
+            effective_response(&endpoint),
+            &json!([{ "id": "live" }])
+        );
+        endpoint.runtime_response = None;
+        assert_eq!(effective_response(&endpoint), &endpoint.response);
+    }
+
+    #[test]
+    fn status_reports_total_requests() {
+        use crate::data::DataPaths;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = DataPaths::from_root(temp.path().join(".json_buddy")).expect("paths");
+        let state = MockState::new(&paths, 4010, false).expect("mock state");
+        state.requests.store(12, Ordering::SeqCst);
+        assert_eq!(state.status().total_requests, 12);
+    }
+
+    #[test]
+    fn rejects_project_ids_that_escape_the_project_directory() {
+        use crate::data::DataPaths;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = DataPaths::from_root(temp.path().join(".json_buddy")).expect("paths");
+        let state = MockState::new(&paths, 4010, false).expect("mock state");
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}").expect("outside");
+        assert!(state.delete_project("../outside").is_err());
+        assert!(outside.exists());
+
+        let mut project = sample_project();
+        project.id = "../outside".to_string();
+        assert!(state.save_project(project).is_err());
+        assert_eq!(fs::read_to_string(&outside).expect("outside"), "{}");
+    }
+
+    #[test]
+    fn deleting_a_project_clears_its_mount_state() {
+        use crate::data::DataPaths;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = DataPaths::from_root(temp.path().join(".json_buddy")).expect("paths");
+        let state = MockState::new(&paths, 4010, false).expect("mock state");
+        let project = state.projects().remove(0);
+        state
+            .running_projects
+            .write()
+            .expect("running projects")
+            .insert(project.id.clone());
+        state.delete_project(&project.id).expect("delete project");
+        assert!(state
+            .running_projects
+            .read()
+            .expect("running projects")
+            .is_empty());
+        assert!(state.projects().is_empty());
+    }
+
+    #[test]
+    fn runtime_responses_stay_out_of_project_files() {
+        use crate::data::DataPaths;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = DataPaths::from_root(temp.path().join(".json_buddy")).expect("paths");
+        let state = MockState::new(&paths, 4010, false).expect("mock state");
+        let mut project = state.projects().remove(0);
+        let endpoint_id = project.endpoints[0].id.clone();
+        state
+            .set_runtime_response(
+                &project.id,
+                &endpoint_id,
+                Some(json!([{ "id": "generated" }])),
+            )
+            .expect("runtime response");
+        project.name = "Movies API updated".to_string();
+        project.endpoints[0].imported_from = Some("movies.schema.json".to_string());
+        state.save_project(project).expect("save project");
+
+        let live = state.projects().remove(0);
+        let endpoint = live
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.id == endpoint_id)
+            .expect("endpoint");
+        assert!(endpoint.runtime_response.is_some());
+
+        let stored = load_projects(&paths.mock_projects).expect("load projects");
+        let stored_endpoint = stored[0]
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.id == endpoint_id)
+            .expect("stored endpoint");
+        assert!(stored_endpoint.runtime_response.is_none());
+        assert_eq!(
+            stored_endpoint.imported_from.as_deref(),
+            Some("movies.schema.json")
+        );
     }
 
     #[test]
