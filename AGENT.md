@@ -21,7 +21,7 @@
 - [x] 树视图：第六种视图、节点展开/折叠、筛选、路径检查器、复制路径与跳转源码
 - [x] 表格视图：真实 JSON 驱动、数组/对象分节、列选择、行筛选、单元格检查器与源码定位；长数组/对象使用固定行高虚拟窗口，滚动与筛选不截断数据
 - [x] 图形视图：真实 JSON 节点/边、缩放/拖拽/布局切换、迷你地图与空/错误状态
-- [x] 代码生成：TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart、JSON Schema；核心类型图推断、数组合并、命名、可选/可空处理与代码输出全部在 Rust `codegen.rs`，前端只调用 `generate_code`、缓存结果并渲染；超过 800 行时使用虚拟窗口，保留行号、横向滚动宽度和滚动位置
+- [x] 代码生成：JSON Schema、TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart；JSON Schema 位于目标菜单首位并作为默认选中的生成目标；核心类型图推断、数组合并、命名、可选/可空处理与代码输出全部在 Rust `codegen.rs`，前端只调用 `generate_code`、缓存结果并渲染；超过 800 行时使用虚拟窗口，保留行号、横向滚动宽度和滚动位置
 - [x] 导入导出：CSV / JSON / JSONL 导入；CSV、Excel、Mock 与生成代码原生保存导出
 - [x] JSON 搜索与生成限制：结果计数与编辑器定位；Mock 生成默认 100 条、上限 1,000 条，生成参数持久化而生成数据不写入项目文件，打开时重新生成
 - [x] 状态栏与本地化：有效/无效 JSON、行号列号、光标 JSON 路径（可复制）、保留缓冲；树/表/图、对话、审计、代码生成与 OpenAPI 导入动态文案随语言切换

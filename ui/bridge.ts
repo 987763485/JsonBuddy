@@ -4892,7 +4892,7 @@ function bindCodegenScrolling(): void {
 
 function codegenKeyFor(lang: string, doc: BridgeDoc | null): string {
   return `${lang}\u0000${doc?.path ?? ""}\u0000${doc?.name ?? ""}\u0000${
-    doc?.text.length ?? 0
+    doc?.text?.length ?? 0
   }\u0000${codegenRevision}`;
 }
 
@@ -4950,7 +4950,7 @@ function paintGeneratedCode(def: any, generated: GeneratedCode, doc: BridgeDoc |
 
 async function renderGeneratedCode(langId: string): Promise<void> {
   const defs = evalGlobal<any[]>("LANG_DEFS");
-  const def = defs.find((item) => item.id === langId) ?? defs[1];
+  const def = defs.find((item) => item.id === langId) ?? defs[0];
   if (!def) return;
   evalGlobal(`currentLang = ${JSON.stringify(def.id)}`);
   const doc = currentDoc();
@@ -5022,6 +5022,13 @@ function scheduleCodegenRender(delay = 180): void {
 function installCodegen(): void {
   if (codegenInstalled) return;
   codegenInstalled = true;
+  evalGlobal(`(() => {
+    if (!Array.isArray(LANG_DEFS)) return;
+    const index = LANG_DEFS.findIndex((def) => def.id === "schema");
+    if (index > 0) LANG_DEFS.unshift(LANG_DEFS.splice(index, 1)[0]);
+    if (LANG_DEFS[0]) currentLang = LANG_DEFS[0].id;
+    if (typeof renderLangMenu === "function") renderLangMenu();
+  })()`);
   bindCodegenScrolling();
   w.renderCodegen = (id: string) => {
     void renderGeneratedCode(id);
