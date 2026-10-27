@@ -173,6 +173,39 @@ monitorChromeStyle.textContent = `
     font-size: 9px;
     letter-spacing: .08em;
   }
+  .side-pane[data-side-pane="session"] {
+    display: block;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-bottom: 10px;
+  }
+  .buddy-session-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    margin: 0 0 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink-3);
+    font-family: var(--font-ui);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-align: left;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .buddy-session-head:hover { color: var(--ink-2); }
+  .buddy-session-head .i {
+    width: 10px;
+    height: 10px;
+    color: var(--ink-4);
+    transition: transform .12s ease;
+  }
+  .buddy-session-section.collapsed .buddy-session-head .i { transform: rotate(-90deg); }
+  .buddy-session-body[hidden] { display: none !important; }
 `;
 document.head.appendChild(monitorChromeStyle);
 
@@ -2173,6 +2206,8 @@ function streamLastEventAge(): string {
   return zh ? `${minutes} 分钟前` : `${minutes}m ago`;
 }
 let buddyConversation: Conversation | null = null;
+let sessionTurnsCollapsed = false;
+let sessionToolsCollapsed = false;
 let buddyStreamPending = 0;
 let buddyStreamFocusLine: number | null = null;
 let buddyStreamScrollBound = false;
@@ -2989,12 +3024,35 @@ function renderConversation(live: boolean): void {
 }
 
 function renderConversationSession(live: boolean): void {
-  const pane = document.querySelector('.side-pane[data-side-pane="session"]');
+  const pane = document.querySelector<HTMLElement>('.side-pane[data-side-pane="session"]');
   if (!pane) return;
+  if (!pane.dataset.buddySessionToggle) {
+    pane.dataset.buddySessionToggle = "1";
+    pane.addEventListener("click", (event) => {
+      const toggle =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-session-toggle]")
+          : null;
+      if (!toggle) return;
+      const kind = toggle.dataset.sessionToggle;
+      if (kind === "turns") sessionTurnsCollapsed = !sessionTurnsCollapsed;
+      else if (kind === "tools") sessionToolsCollapsed = !sessionToolsCollapsed;
+      else return;
+      const collapsed =
+        kind === "turns" ? sessionTurnsCollapsed : sessionToolsCollapsed;
+      const section = toggle.closest<HTMLElement>(".buddy-session-section");
+      const body = section?.querySelector<HTMLElement>(".buddy-session-body");
+      section?.classList.toggle("collapsed", collapsed);
+      if (body) body.hidden = collapsed;
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    });
+  }
+  const previousScrollTop = pane.scrollTop;
   const conversation = buddyConversation;
   if (!conversation) {
     pane.innerHTML =
       '<div class="side-section"><div class="side-title">Session</div><div class="turn-sub">No session data.</div></div>';
+    pane.scrollTop = 0;
     return;
   }
   const models = conversation.models.length
@@ -3027,7 +3085,6 @@ function renderConversationSession(live: boolean): void {
     </div>`;
   };
   const turns = conversation.turns
-    .slice(-8)
     .map(
       (turn) => `<div class="turn-item" ${turn !== conversation.turns[conversation.turns.length - 1] ? 'style="margin-top:4px"' : ""}>
         <span class="dot${turn.streaming ? " pulse" : ""}"></span>
@@ -3041,7 +3098,6 @@ function renderConversationSession(live: boolean): void {
     )
     .join("");
   const tools = conversation.toolCalls
-    .slice(-12)
     .map(
       (call) => `<div class="side-tool${call.status === "error" ? " err" : ""}">
         <svg class="i xs" viewBox="0 0 24 24"><use href="#i-wrench"/></svg>
@@ -3050,6 +3106,21 @@ function renderConversationSession(live: boolean): void {
       </div>`
     )
     .join("");
+  const section = (
+    kind: "turns" | "tools",
+    title: string,
+    body: string,
+    collapsed: boolean
+  ) =>
+    body
+      ? `<div class="side-section buddy-session-section${collapsed ? " collapsed" : ""}">
+          <button type="button" class="buddy-session-head" data-session-toggle="${kind}" aria-expanded="${!collapsed}" aria-controls="buddySession${kind}">
+            <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-down"/></svg>
+            <span>${title}</span>
+          </button>
+          <div class="buddy-session-body" id="buddySession${kind}" ${collapsed ? "hidden" : ""}>${body}</div>
+        </div>`
+      : "";
   pane.innerHTML = `<div class="session-card">
     <div class="session-id-row">
       <span class="session-id-label">SESSION</span>
@@ -3073,16 +3144,12 @@ function renderConversationSession(live: boolean): void {
       )} tok</div></div>
     </div>
   </div>
-  ${
-    turns
-      ? `<div class="side-section"><div class="side-title">Turns</div>${turns}</div>`
-      : ""
-  }
-  ${
-    tools
-      ? `<div class="side-section"><div class="side-title">Tool calls</div>${tools}</div>`
-      : ""
-  }`;
+  ${section("turns", "Turns", turns, sessionTurnsCollapsed)}
+  ${section("tools", "Tool calls", tools, sessionToolsCollapsed)}`;
+  pane.scrollTop = Math.min(
+    previousScrollTop,
+    Math.max(0, pane.scrollHeight - pane.clientHeight)
+  );
   w.setText("chatCount", `${conversation.messages.length} messages`);
   if (current) {
     const chip = document.querySelector<HTMLElement>(".chat-head .model-chip");
@@ -8104,6 +8171,8 @@ function patchStreamFlow(): void {
     buddyStreamFocusLine = null;
     resetStreamRate();
     buddyConversation = snapshot.conversation;
+    sessionTurnsCollapsed = false;
+    sessionToolsCollapsed = false;
     buddyAuditEntries = snapshot.audit ?? [];
     buddyAuditActive = true;
     const files = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES");
