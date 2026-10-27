@@ -47,6 +47,7 @@ pub struct ToolCall {
     pub status: String,
     pub duration_ms: Option<u64>,
     pub output: Option<String>,
+    pub timestamp: Option<String>,
     pub line: u64,
 }
 
@@ -393,7 +394,7 @@ impl Builder {
         if let Some(ms) = timestamp_ms_of(object) {
             self.call_times.insert(id.clone(), ms);
         }
-        let assistant = self.ensure_assistant(timestamp, line);
+        let assistant = self.ensure_assistant(timestamp.clone(), line);
         if !self
             .conversation
             .tool_calls
@@ -407,6 +408,7 @@ impl Builder {
                 status: "pending".to_string(),
                 duration_ms: None,
                 output: None,
+                timestamp: timestamp.clone(),
                 line,
             });
         }
@@ -450,7 +452,7 @@ impl Builder {
                     None
                 }
             });
-        let assistant = self.ensure_assistant(timestamp, line);
+        let assistant = self.ensure_assistant(timestamp.clone(), line);
         if let Some(call) = self
             .conversation
             .tool_calls
@@ -470,6 +472,7 @@ impl Builder {
                 status,
                 duration_ms: duration,
                 output,
+                timestamp,
                 line,
             });
         }

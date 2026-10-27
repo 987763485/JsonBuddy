@@ -4,7 +4,7 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。下一步是审计与树/表格/图形视图。
+当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。下一步是树视图与表格/图形数据视图。
 
 ## 模块进度
 
@@ -14,7 +14,7 @@
 - [x] JSON 流桥接：快照、跟随、暂停、删除、实时事件与统计渲染
 - [x] JSON 流对话视图：Rust 语义归一化、会话卡片、模型切换、工具调用与只读状态
 - [x] JSON Mock：项目/端点持久化、响应 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 服务启停
-- [ ] 审计：Rust 策略模块、保留与确认、审计面板
+- [x] 审计：Rust 策略模块、严格分类、500 条上限、设置与确认持久化、真实审计面板
 - [ ] React 参考实现中的树/表格/分栏视图尚未移植到原型 UI
 
 ## 我的角色

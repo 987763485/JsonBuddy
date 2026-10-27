@@ -8,6 +8,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   AppSettings,
+  AuditConfig,
+  AuditEntry,
   BootstrapData,
   Conversation,
   ConversationMessage,
@@ -1498,6 +1500,219 @@ function renderConversationSession(live: boolean): void {
   }
 }
 
+let buddyAuditEntries: AuditEntry[] = [];
+let buddyAuditConfig: AuditConfig | null = null;
+let buddyAuditAck = new Set<string>();
+let buddyAuditActive = false;
+let buddyAuditSeverity = "all";
+let auditRenderTimer: number | null = null;
+
+function auditTime(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const base = date.toLocaleTimeString("en-GB", { hour12: false });
+  return `${base}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+}
+
+function auditIcon(category: string): string {
+  const icons: Record<string, string> = {
+    traversal: "i-alert",
+    read: "i-file",
+    upload: "i-upload",
+    delete: "i-trash",
+    shell: "i-terminal",
+    network: "i-globe"
+  };
+  return icons[category] ?? "i-shield";
+}
+
+function auditItemHtml(entry: AuditEntry, selected: boolean): string {
+  const acknowledged = buddyAuditAck.has(entry.id);
+  const blocked = entry.blocked;
+  const classes = [
+    "audit-item",
+    `sev-${entry.severity}`,
+    selected ? "sel" : "",
+    acknowledged ? "acked" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="${classes}" data-type="${w.escHtml(entry.category)}"
+      data-severity="${w.escHtml(entry.severity)}"
+      data-blocked="${blocked ? "1" : "0"}"
+      data-audit-id="${w.escHtml(entry.id)}"
+      data-label="${w.escHtml(entry.label.toLowerCase())}"
+      onclick="selectAudit(this)">
+    <div class="ai-top">
+      <span class="ai-type"><svg class="i" viewBox="0 0 24 24"><use href="#${auditIcon(
+        entry.category
+      )}"/></svg><span>${w.escHtml(entry.label)}</span></span>
+      <span class="ai-decision ${blocked ? "blocked" : "allowed"}">${
+        blocked ? "Blocked" : "Allowed"
+      }</span>
+    </div>
+    <div class="ai-target">${w.escHtml(entry.target || "—")}</div>
+    <div class="ai-meta">
+      <span>${w.escHtml(entry.tool)}</span>
+      <span>${w.escHtml(auditTime(entry.timestamp))}</span>
+      <span>${w.escHtml(entry.sessionId ?? "session")}</span>
+    </div>
+    <div class="ai-detail">
+      <div class="ai-rule">${w.escHtml(entry.rule)}</div>
+      <div class="ai-actions">
+        <button class="ai-action" onclick="event.stopPropagation(); openAuditSource()">View raw event</button>
+        ${
+          acknowledged
+            ? '<button class="ai-action ack acked" disabled>Acknowledged</button>'
+            : `<button class="ai-action ack" data-ack-id="${w.escHtml(
+                entry.id
+              )}">Acknowledge</button>`
+        }
+        <button class="ai-action" onclick="event.stopPropagation(); copyAuditTarget(this)">Copy target</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function applyAuditSeverity(): void {
+  const query = (
+    document.getElementById("monitorFilter") as HTMLInputElement | null
+  )?.value.trim().toLowerCase();
+  document
+    .querySelectorAll<HTMLElement>("#auditList .audit-item")
+    .forEach((item) => {
+      const severity = item.dataset.severity ?? "";
+      const matchesSeverity =
+        buddyAuditSeverity === "all" || severity === buddyAuditSeverity;
+      const matchesQuery =
+        !query || item.textContent.toLowerCase().includes(query);
+      item.hidden =
+        item.classList.contains("audit-off") ||
+        !matchesSeverity ||
+        !matchesQuery;
+    });
+  document
+    .querySelectorAll<HTMLElement>(".audit-filters .chip")
+    .forEach((chip, index) => {
+      const value = ["all", "critical", "warning", "info"][index];
+      chip.classList.toggle("on", value === buddyAuditSeverity);
+    });
+}
+
+function renderAudit(): void {
+  if (!buddyAuditActive) return;
+  const host = document.getElementById("auditList");
+  if (!host) return;
+  host.innerHTML = buddyAuditEntries
+    .map((entry, index) => auditItemHtml(entry, index === 0))
+    .join("");
+  host.querySelectorAll<HTMLElement>("[data-ack-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const id = button.dataset.ackId;
+      if (id) void w.buddyAcknowledgeAudit(id, button);
+    });
+  });
+  const categories = buddyAuditConfig?.categories ?? {};
+  const enabled = Object.entries(categories)
+    .filter(([, value]) => value)
+    .map(([key]) => key);
+  try {
+    evalGlobal(`auditEnabled = new Set(${JSON.stringify(enabled)})`);
+    w.updateAuditUI?.();
+  } catch {
+    // The audit pane may not be mounted outside the monitor view.
+  }
+  applyAuditSeverity();
+  try {
+    w.applyMonitorFilter?.();
+  } catch {
+    // Filtering is optional.
+  }
+}
+
+function scheduleAuditRender(): void {
+  if (auditRenderTimer !== null) window.clearTimeout(auditRenderTimer);
+  auditRenderTimer = window.setTimeout(() => {
+    auditRenderTimer = null;
+    renderAudit();
+  }, 220);
+}
+
+function syncAuditSettingsChecks(): void {
+  const categories = buddyAuditConfig?.categories ?? {};
+  document.querySelectorAll<HTMLElement>(".as-option").forEach((option) => {
+    const key = option.dataset.auditOption ?? "";
+    const check = option.querySelector<HTMLElement>(".check");
+    check?.classList.toggle("on", categories[key] === true);
+  });
+}
+
+async function loadAuditConfig(): Promise<AuditConfig> {
+  const config = await invoke<AuditConfig>("audit_config");
+  buddyAuditConfig = config;
+  buddyAuditAck = new Set(config.acknowledged);
+  syncAuditSettingsChecks();
+  return config;
+}
+
+function patchAuditFlow(): void {
+  const originalApplyMonitorFilter = w.applyMonitorFilter;
+  w.applyMonitorFilter = () => {
+    originalApplyMonitorFilter();
+    applyAuditSeverity();
+  };
+  const originalOpenAuditSettings = w.openAuditSettings;
+  w.openAuditSettings = () => {
+    originalOpenAuditSettings();
+    syncAuditSettingsChecks();
+  };
+
+  w.saveAuditSettings = async () => {
+    const categories: Record<string, boolean> = {};
+    document.querySelectorAll<HTMLElement>(".as-option").forEach((option) => {
+      const key = option.dataset.auditOption;
+      if (!key) return;
+      categories[key] =
+        option.querySelector(".check")?.classList.contains("on") === true;
+    });
+    try {
+      const config = await invoke<AuditConfig>("update_audit_categories", {
+        categories
+      });
+      buddyAuditConfig = config;
+      buddyAuditAck = new Set(config.acknowledged);
+      w.closeAuditSettings?.();
+      renderAudit();
+    } catch (error) {
+      toast("Could not save audit settings", String(error));
+    }
+  };
+
+  w.buddyAcknowledgeAudit = async (id: string, button: HTMLElement) => {
+    try {
+      const config = await invoke<AuditConfig>("acknowledge_audit", { id });
+      buddyAuditConfig = config;
+      buddyAuditAck = new Set(config.acknowledged);
+      button.closest(".audit-item")?.classList.add("acked");
+      button.textContent = "Acknowledged";
+      (button as HTMLButtonElement).disabled = true;
+    } catch (error) {
+      toast("Could not acknowledge audit event", String(error));
+    }
+  };
+
+  document
+    .querySelectorAll<HTMLElement>(".audit-filters .chip")
+    .forEach((chip, index) => {
+      chip.addEventListener("click", () => {
+        buddyAuditSeverity = ["all", "critical", "warning", "info"][index] ?? "all";
+        applyAuditSeverity();
+      });
+    });
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -1527,6 +1742,8 @@ function patchStreamFlow(): void {
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
     buddyConversation = snapshot.conversation;
+    buddyAuditEntries = snapshot.audit ?? [];
+    buddyAuditActive = true;
     const files = evalGlobal<BridgeStreamFile[]>("MONITOR_FILES");
     const existingIndex = files.findIndex((file) => file.id === snapshot.path);
     const existing = existingIndex >= 0 ? files[existingIndex] : undefined;
@@ -1539,6 +1756,7 @@ function patchStreamFlow(): void {
     renderRealStreamEvents(false);
     updateRealStreamChrome(entry, false);
     renderConversation(false);
+    renderAudit();
   };
 
   w.openMonitorFile = async (id: string) => {
@@ -1614,6 +1832,9 @@ function patchStreamFlow(): void {
       if (buddyStreamSnapshot?.path === id) {
         buddyStreamSnapshot = null;
         buddyStreamEvents = [];
+        buddyConversation = null;
+        buddyAuditEntries = [];
+        buddyAuditActive = false;
       }
     } catch (error) {
       toast("Could not remove stream", String(error));
@@ -1664,6 +1885,11 @@ function startStreamEventBridge(): void {
     file.ratio = streamRatio(buddyStreamSnapshot?.size ?? 0, payload.decodedSize);
     file.counts = streamLevelCounts(buddyStreamEvents).labels;
     buddyConversation = payload.conversation ?? buddyConversation;
+    if (payload.audit) {
+      buddyAuditEntries = payload.audit;
+      buddyAuditActive = true;
+      scheduleAuditRender();
+    }
     const code = document.getElementById("streamCode");
     const nearBottom = code
       ? code.scrollHeight - code.scrollTop - code.clientHeight < 50
@@ -2530,15 +2756,20 @@ async function bootstrap(): Promise<void> {
     startStreamEventBridge();
     patchMockFlow();
     startMockEventBridge();
+    patchAuditFlow();
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
-    const [projects, serverStatus, requestLogs] = await Promise.all([
+    const [projects, serverStatus, requestLogs, auditConfig] = await Promise.all([
       invoke<MockProject[]>("list_mock_projects"),
       invoke<MockServerStatus>("mock_server_status"),
-      invoke<MockRequestLog[]>("mock_request_logs")
+      invoke<MockRequestLog[]>("mock_request_logs"),
+      invoke<AuditConfig>("audit_config")
     ]);
     seedMockProjects(projects, serverStatus, requestLogs);
+    buddyAuditConfig = auditConfig;
+    buddyAuditAck = new Set(auditConfig.acknowledged);
+    syncAuditSettingsChecks();
     w.renderFileMenuStreamRecents?.();
     w.openJsonToolRecents();
     syncEditor(true);

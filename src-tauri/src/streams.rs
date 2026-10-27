@@ -1,3 +1,4 @@
+use crate::audit::{analyze, AuditEntry};
 use crate::conversation::{normalize_events, Conversation};
 use crate::documents::{RecentStream, RecentStore};
 use notify::{RecursiveMode, Watcher};
@@ -39,6 +40,7 @@ pub struct StreamSnapshot {
     pub lines: u64,
     pub events: Vec<StreamEvent>,
     pub conversation: Conversation,
+    pub audit: Vec<AuditEntry>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -47,6 +49,7 @@ pub struct StreamLivePayload {
     pub path: String,
     pub events: Vec<StreamEvent>,
     pub conversation: Conversation,
+    pub audit: Vec<AuditEntry>,
     pub total_lines: u64,
     pub decoded_size: u64,
     pub reset: bool,
@@ -225,13 +228,15 @@ pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
     let mut events = all_events;
     trim_event_buffer(&mut events);
     let conversation = normalize_events(&events);
+    let path_string = canonical.to_string_lossy().to_string();
+    let audit = analyze(&conversation, &path_string);
     let name = canonical
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("stream.jsonl")
         .to_string();
     Ok(StreamSnapshot {
-        path: canonical.to_string_lossy().to_string(),
+        path: path_string,
         name,
         format: format.to_string(),
         size: metadata.len(),
@@ -239,6 +244,7 @@ pub fn read_snapshot(path: &str) -> Result<StreamSnapshot, String> {
         lines: total_lines,
         events,
         conversation,
+        audit,
     })
 }
 
@@ -294,6 +300,7 @@ fn process_change(
                 path: key.to_string(),
                 events: snapshot.events,
                 conversation: snapshot.conversation,
+                audit: snapshot.audit,
                 total_lines: snapshot.lines,
                 decoded_size: snapshot.decoded_size,
                 reset: true,
@@ -332,12 +339,14 @@ fn process_change(
         event_buffer.extend(events.iter().cloned());
         trim_event_buffer(event_buffer);
         let conversation = normalize_events(event_buffer);
+        let audit = analyze(&conversation, key);
         let _ = app.emit(
             "stream-live",
             StreamLivePayload {
                 path: key.to_string(),
                 events,
                 conversation,
+                audit,
                 total_lines: *line_no,
                 decoded_size: *decoded_size,
                 reset: false,
@@ -446,6 +455,9 @@ mod tests {
             assert!(snapshot.conversation.stats.user_messages > 0);
             assert!(snapshot.conversation.stats.tool_calls > 0);
             assert!(!snapshot.conversation.messages.is_empty());
+            assert!(!snapshot.audit.is_empty());
+            assert!(snapshot.audit.iter().all(|entry| entry.path == snapshot.path));
+            assert!(snapshot.audit.len() <= crate::audit::AUDIT_LIMIT);
         }
         let zstd_file = example.join("session.v4.jsonl.zstd");
         if zstd_file.is_file() {

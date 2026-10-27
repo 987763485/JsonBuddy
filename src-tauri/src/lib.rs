@@ -1,3 +1,4 @@
+mod audit;
 mod conversation;
 mod data;
 mod documents;
@@ -6,6 +7,7 @@ mod settings;
 mod state;
 mod streams;
 
+use audit::{AuditConfig, AuditState};
 use data::DataPaths;
 use documents::{
     create_document, load_recent, read_document, record_recent, remove_recent,
@@ -16,6 +18,7 @@ use serde::Serialize;
 use mock::{MockProject, MockRequestLog, MockServerStatus, MockState};
 use settings::{load_settings, save_settings, AppSettings};
 use state::AppState;
+use std::collections::HashMap;
 use std::io;
 use streams::{
     read_snapshot, record_recent as record_stream_recent, StreamManager, StreamSnapshot,
@@ -237,6 +240,24 @@ fn mock_request_logs(state: State<'_, AppState>) -> Result<Vec<MockRequestLog>, 
 }
 
 #[tauri::command]
+fn audit_config(state: State<'_, AppState>) -> Result<AuditConfig, String> {
+    Ok(state.audit.config())
+}
+
+#[tauri::command]
+fn update_audit_categories(
+    state: State<'_, AppState>,
+    categories: HashMap<String, bool>,
+) -> Result<AuditConfig, String> {
+    state.audit.update_categories(categories)
+}
+
+#[tauri::command]
+fn acknowledge_audit(state: State<'_, AppState>, id: String) -> Result<AuditConfig, String> {
+    state.audit.acknowledge(&id)
+}
+
+#[tauri::command]
 fn start_mock_server(app: AppHandle, state: State<'_, AppState>) -> Result<MockServerStatus, String> {
     state.mock.start_server(app)
 }
@@ -262,12 +283,14 @@ pub fn run() {
             let recents = load_recent(&paths.recent);
             let mock = MockState::new(&paths, settings.mock_port, settings.mock_https)
                 .map_err(io::Error::other)?;
+            let audit = AuditState::new(&paths.audit).map_err(io::Error::other)?;
             app.manage(AppState {
                 paths,
                 settings: std::sync::Mutex::new(settings),
                 recents: std::sync::Mutex::new(recents),
                 streams: std::sync::Mutex::new(StreamManager::default()),
                 mock,
+                audit,
             });
             Ok(())
         })
@@ -290,6 +313,9 @@ pub fn run() {
             delete_mock_project,
             mock_server_status,
             mock_request_logs,
+            audit_config,
+            update_audit_categories,
+            acknowledge_audit,
             start_mock_server,
             stop_mock_server
         ])

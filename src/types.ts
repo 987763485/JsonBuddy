@@ -52,6 +52,7 @@ export interface ConversationToolCall {
   status: string;
   durationMs?: number | null;
   output?: string | null;
+  timestamp?: string | null;
   line: number;
 }
 
@@ -106,6 +107,26 @@ export interface Conversation {
   stats: ConversationStats;
 }
 
+export interface AuditEntry {
+  id: string;
+  path: string;
+  category: string;
+  severity: "critical" | "warning" | "info" | string;
+  label: string;
+  target: string;
+  tool: string;
+  sessionId?: string | null;
+  timestamp?: string | null;
+  blocked: boolean;
+  rule: string;
+  line: number;
+}
+
+export interface AuditConfig {
+  categories: Record<string, boolean>;
+  acknowledged: string[];
+}
+
 export interface StreamSnapshot {
   path: string;
   name: string;
@@ -115,12 +136,14 @@ export interface StreamSnapshot {
   lines: number;
   events: StreamEvent[];
   conversation: Conversation;
+  audit: AuditEntry[];
 }
 
 export interface StreamLivePayload {
   path: string;
   events: StreamEvent[];
   conversation: Conversation;
+  audit: AuditEntry[];
   totalLines: number;
   decodedSize: number;
   reset: boolean;

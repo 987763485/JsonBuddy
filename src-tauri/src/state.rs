@@ -1,3 +1,4 @@
+use crate::audit::AuditState;
 use crate::data::DataPaths;
 use crate::documents::RecentStore;
 use crate::mock::MockState;
@@ -11,4 +12,5 @@ pub struct AppState {
     pub recents: Mutex<RecentStore>,
     pub streams: Mutex<StreamManager>,
     pub mock: MockState,
+    pub audit: AuditState,
 }
