@@ -2,7 +2,9 @@ mod audit;
 mod conversation;
 mod data;
 mod documents;
+mod menu;
 mod mock;
+mod network;
 mod settings;
 mod state;
 mod streams;
@@ -15,8 +17,8 @@ use documents::{
     remove_recent_stream as remove_stream_recent, save_document, save_recent, JsonDocument,
     RecentDocument, RecentStream,
 };
-use serde::Serialize;
 use mock::{MockProject, MockRequestLog, MockServerStatus, MockState};
+use serde::Serialize;
 use settings::{load_settings, save_settings, AppSettings};
 use state::AppState;
 use std::collections::HashMap;
@@ -24,11 +26,19 @@ use std::io;
 use streams::{
     read_snapshot, record_recent as record_stream_recent, StreamManager, StreamSnapshot,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 fn parse_yaml_document(text: String) -> Result<serde_json::Value, String> {
     yaml::parse_yaml_document(&text)
+}
+
+#[tauri::command]
+async fn test_local_request(
+    url: String,
+    method: String,
+) -> Result<network::LocalRequestResult, String> {
+    network::send_local_request(&url, &method).await
 }
 
 #[derive(Serialize)]
@@ -69,11 +79,14 @@ fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
 
 #[tauri::command]
 fn update_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let saved = save_settings(&state.paths.settings, &settings)?;
     state.mock.configure(saved.mock_port, saved.mock_https);
+    menu::install(&app, &saved.language)
+        .map_err(|error| format!("could not rebuild the application menu: {error}"))?;
     *state
         .settings
         .lock()
@@ -315,6 +328,7 @@ pub fn run() {
                 save_settings(&paths.settings, &settings)
                     .map_err(io::Error::other)?;
             }
+            menu::install(app.handle(), &settings.language).map_err(io::Error::other)?;
             let recents = load_recent(&paths.recent);
             let mock = MockState::new(&paths, settings.mock_port, settings.mock_https)
                 .map_err(io::Error::other)?;
@@ -329,6 +343,11 @@ pub fn run() {
             });
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            if let Err(error) = app.emit("buddy-menu", event.id().as_ref().to_string()) {
+                eprintln!("could not forward menu event: {error}");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             update_settings,
@@ -337,7 +356,8 @@ pub fn run() {
             open_json_document,
             save_json_document,
             save_text_file,
-        parse_yaml_document,
+            parse_yaml_document,
+            test_local_request,
             remove_recent_json_document,
             list_recent_streams,
             open_stream,
