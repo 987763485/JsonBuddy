@@ -2181,6 +2181,7 @@ let buddyStreamArchiveLoading = false;
 let buddyStreamArchiveExhausted = false;
 let buddyStreamArchiveLoaded = false;
 let buddyStreamFollowing: string | null = null;
+let buddyStreamOpenGeneration = 0;
 let buddyStreamRateSamples: { at: number; count: number }[] = [];
 let buddyStreamLastEventAt: number | null = null;
 let buddyOpenStreamPath: ((path: string) => Promise<void>) | null = null;
@@ -2257,12 +2258,6 @@ function streamRatio(size: number, decoded: number): string {
   return `${ratio.toFixed(1)}×`;
 }
 
-function directoryOf(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  return index > 0 ? normalized.slice(0, index) : normalized;
-}
-
 function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
   const size = formatBytes(entry.size);
   return {
@@ -2284,7 +2279,7 @@ function streamFileFromRecent(entry: RecentStream): BridgeStreamFile {
           : streamRatio(entry.size, entry.decodedSize)
         : undefined,
     size,
-    path: directoryOf(entry.path),
+    path: entry.path,
     origin: "local stream",
     opened: openedLabel(entry.openedAt),
     modified: new Date(entry.openedAt).toLocaleTimeString("en-GB", { hour12: false }),
@@ -2317,7 +2312,7 @@ function streamFileFromSnapshot(
           : streamRatio(snapshot.size, snapshot.decodedSize)
         : undefined,
     size,
-    path: directoryOf(snapshot.path),
+    path: snapshot.path,
     origin: "local stream",
     opened: keepOpened?.opened ?? "Just now",
     modified: new Date().toLocaleTimeString("en-GB", { hour12: false }),
@@ -2607,6 +2602,16 @@ function getStreamPaused(): boolean {
   }
 }
 
+function stopBuddyStreamFollow(): number {
+  buddyStreamOpenGeneration += 1;
+  const path = buddyStreamFollowing;
+  buddyStreamFollowing = null;
+  if (path) {
+    void invoke("stop_stream_follow", { path }).catch(() => undefined);
+  }
+  return buddyStreamOpenGeneration;
+}
+
 function bindStreamScroll(): void {
   if (buddyStreamScrollBound) return;
   const host = document.getElementById("streamCode");
@@ -2629,11 +2634,7 @@ function bindStreamScroll(): void {
   if (edge) {
     (edge as HTMLElement).style.cursor = "pointer";
     edge.addEventListener("click", () => {
-      if (getStreamPaused()) {
-        void w.toggleMonitorPause?.();
-      } else {
-        scrollStreamToBottom();
-      }
+      scrollStreamToBottom();
     });
   }
 }
@@ -3289,6 +3290,7 @@ let trajectoryRenderTimer: number | null = null;
 let trajectoryTimelineFrame: number | null = null;
 let trajectoryPaintFrame: number | null = null;
 let trajectoryResetScroll = false;
+let trajectoryLastFilterQuery: string | null = null;
 let trajectoryStreamPath: string | null = null;
 
 
@@ -4914,9 +4916,19 @@ function installTrajectoryView(): void {
   };
 
   const originalApplyFilter = w.applyMonitorFilter;
+  trajectoryLastFilterQuery = String(
+    (document.getElementById("monitorFilter") as HTMLInputElement | null)?.value ?? ""
+  );
   w.applyMonitorFilter = () => {
+    const filter = document.getElementById("monitorFilter") as HTMLInputElement | null;
+    const query = String(filter?.value ?? "");
+    const queryChanged =
+      trajectoryLastFilterQuery !== null && query !== trajectoryLastFilterQuery;
+    trajectoryLastFilterQuery = query;
     originalApplyFilter();
-    if (trajectoryModeActive()) scheduleTrajectoryRender(60, true);
+    if (trajectoryModeActive() && queryChanged) {
+      scheduleTrajectoryRender(60, true);
+    }
   };
 
   updateTrajectoryLanguage();
@@ -7652,7 +7664,6 @@ function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
   const originalOpenMonitorFile = w.openMonitorFile;
-  const originalToggleMonitorPause = w.toggleMonitorPause;
   const originalDeleteMonitorFile = w.deleteMonitorFile;
   const originalOpenMonitorFileDialog = w.openMonitorFileDialog;
 
@@ -7665,14 +7676,7 @@ function patchStreamFlow(): void {
   };
 
   const openStreamPath = async (path: string) => {
-    if (buddyStreamFollowing) {
-      try {
-        await invoke("stop_stream_follow", { path: buddyStreamFollowing });
-      } catch {
-        // The stream may already be closed.
-      }
-      buddyStreamFollowing = null;
-    }
+    const generation = stopBuddyStreamFollow();
     const snapshot = await invoke<StreamSnapshot>("open_stream", { path });
     buddyStreamSnapshot = snapshot;
     buddyStreamEvents = snapshot.events;
@@ -7692,14 +7696,15 @@ function patchStreamFlow(): void {
     const existingIndex = files.findIndex((file) => file.id === snapshot.path);
     const existing = existingIndex >= 0 ? files[existingIndex] : undefined;
     const entry = streamFileFromSnapshot(snapshot, existing);
+    entry.paused = false;
     if (existingIndex >= 0) files.splice(existingIndex, 1);
     files.unshift(entry);
     evalGlobal(`activeMonitorFileId = ${JSON.stringify(entry.id)}`);
     originalOpenMonitorFile(entry.id);
-    renderRealStreamSource(false);
-    renderRealStreamEvents(false);
-    updateRealStreamChrome(entry, false);
-    renderConversation(false);
+    renderRealStreamSource(true);
+    renderRealStreamEvents(true);
+    updateRealStreamChrome(entry, true);
+    renderConversation(true);
     renderTrajectoryIfActive();
     renderAudit();
     bindStreamScroll();
@@ -7707,8 +7712,37 @@ function patchStreamFlow(): void {
       const host = document.getElementById("streamCode");
       if (!host) return;
       host.scrollTop = host.scrollHeight;
-      renderRealStreamSource(false);
+      renderRealStreamSource(true);
     });
+    try {
+      await invoke("start_stream_follow", { path: snapshot.path });
+    } catch (error) {
+      if (generation === buddyStreamOpenGeneration) {
+        entry.paused = true;
+        renderRealStreamSource(false);
+        renderRealStreamEvents(false);
+        updateRealStreamChrome(entry, false);
+        renderConversation(false);
+        renderTrajectoryIfActive();
+        toast("Could not follow stream", String(error));
+      }
+      return;
+    }
+    const app = document.getElementById("app") as HTMLElement | null;
+    if (
+      generation !== buddyStreamOpenGeneration ||
+      app?.dataset.view !== "monitor" ||
+      app.dataset.monitorPage !== "detail" ||
+      buddyStreamSnapshot?.path !== snapshot.path
+    ) {
+      void invoke("stop_stream_follow", { path: snapshot.path }).catch(
+        () => undefined
+      );
+      return;
+    }
+    buddyStreamFollowing = snapshot.path;
+    entry.paused = false;
+    updateRealStreamChrome(entry, true);
   };
 
   buddyOpenStreamPath = openStreamPath;
@@ -7742,43 +7776,6 @@ function patchStreamFlow(): void {
       );
     } catch (error) {
       toast("Could not open stream", String(error));
-    }
-  };
-
-  w.toggleMonitorPause = async () => {
-    const file = evalGlobal<BridgeStreamFile | null>(
-      `getMonitorFile(${JSON.stringify(buddyStreamSnapshot?.path ?? "")})`
-    );
-    if (!buddyStreamSnapshot || !file) return;
-    const shouldFollow = file.paused;
-    if (shouldFollow) {
-      try {
-        await invoke("start_stream_follow", { path: buddyStreamSnapshot.path });
-        buddyStreamFollowing = buddyStreamSnapshot.path;
-      } catch (error) {
-        toast("Could not follow stream", String(error));
-        return;
-      }
-    } else {
-      try {
-        await invoke("stop_stream_follow", { path: buddyStreamSnapshot.path });
-      } catch {
-        // Ignore if the watcher has already stopped.
-      }
-      buddyStreamFollowing = null;
-    }
-    originalToggleMonitorPause();
-    resetStreamRate();
-    const live = !file.paused;
-    renderRealStreamSource(live);
-    renderRealStreamEvents(live);
-    updateRealStreamChrome(file, live);
-    renderConversation(live);
-    renderTrajectoryIfActive();
-    if (live) scrollStreamToBottom();
-    if (live) {
-      const code = document.getElementById("streamCode");
-      if (code) requestAnimationFrame(() => { code.scrollTop = code.scrollHeight; });
     }
   };
 
@@ -7839,13 +7836,14 @@ function patchStreamFlow(): void {
   bindStreamScroll();
 
   w.openMonitorRecents = () => {
-    if (buddyStreamFollowing) {
-      void invoke("stop_stream_follow", { path: buddyStreamFollowing }).catch(
-        () => undefined
-      );
-      buddyStreamFollowing = null;
-    }
+    stopBuddyStreamFollow();
     originalOpenMonitorRecents();
+  };
+
+  const originalSetRail = w.setRail;
+  w.setRail = (name: string) => {
+    if (name !== "monitor") stopBuddyStreamFollow();
+    originalSetRail?.(name);
   };
 }
 

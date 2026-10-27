@@ -10084,9 +10084,6 @@
                 oninput="applyMonitorFilter()"
                 onkeydown="if(event.key==='Escape'){this.value='';applyMonitorFilter();}" />
             </label>
-            <button class="tbtn" id="pauseBtn" onclick="toggleMonitorPause()"><svg class="i sm" viewBox="0 0 24 24">
-                <use href="#i-pause" />
-              </svg><span id="pauseLabel">Pause</span></button>
             <div class="monitor-more-wrap">
               <button class="tbtn icon-only" id="monitorMoreBtn" title="More" onclick="toggleMonitorMore(event)"
                 aria-haspopup="menu" aria-expanded="false"><svg class="i" viewBox="0 0 24 24">
@@ -15737,7 +15734,7 @@ class Root {
         <div class="mon-file" onclick="openMonitorFile('${f.id}')">
           <span class="mon-file-name">
             <span class="mon-file-icon ${f.format}"><svg class="i" viewBox="0 0 24 24"><use href="#i-file"/></svg></span>
-            <span class="mon-file-copy"><b>${escHtml(f.name)}</b><small>${escHtml(f.path)} · ${escHtml(f.origin)}</small></span>
+            <span class="mon-file-copy"><b>${escHtml(f.name)}</b><small title="${escHtml(f.path)}">${escHtml(f.path)} · ${escHtml(f.origin)}</small></span>
           </span>
           <span class="fmt-badge ${f.format}">${zstd ? 'ZSTD' : 'JSONL'}</span>
           <span class="mon-file-num">${f.lineLabel}</span>
@@ -15765,7 +15762,7 @@ class Root {
     function openMonitorFile(id) {
       const file = getMonitorFile(id);
       if (!file) return;
-      startStream(file.format, false, file.mode, file);
+      startStream(file.format, true, file.mode, file);
     }
 
     function startStream(format, follow, mode, sourceFile) {
@@ -15823,6 +15820,8 @@ class Root {
       setText('stat4Value', live ? '18 lines/s' : file.modified);
 
       setText('lpPath', file.path);
+      const lpPath = document.getElementById('lpPath');
+      if (lpPath) lpPath.title = file.path;
       setText('lpFrame', zstd
         ? (live ? 'Frame 6 · appended 0.4s ago' : `Decoded 6 frames · last ${file.modified}`)
         : (live ? 'Appended 0.4s ago' : `Modified ${file.modified}`));
@@ -15842,11 +15841,6 @@ class Root {
       setText('monitorFormat', zstd ? (live ? 'zstd · frame 6' : 'zstd · 6 frames') : 'JSONL · UTF-8');
       setText('monitorLines', `${lines} lines`);
       setText('monitorSize', zstd ? `${file.decoded} decoded` : file.size);
-
-      const pauseBtn = document.getElementById('pauseBtn');
-      pauseBtn.querySelector('use').setAttribute('href', live ? '#i-pause' : '#i-play');
-      setText('pauseLabel', live ? 'Pause' : 'Follow');
-      pauseBtn.title = live ? 'Pause following' : 'Follow file';
 
       ['chatStatePill', 'chatSideState'].forEach(id => {
         const el = document.getElementById(id);
@@ -16247,13 +16241,6 @@ class Root {
       const name = (currentDocument.name || 'data').replace(/\.json$/i, '') + '.xls';
       downloadFile(html, 'application/vnd.ms-excel', name);
       showToast('Exported Excel', name);
-    }
-
-    function toggleMonitorPause() {
-      const file = getMonitorFile(activeMonitorFileId);
-      const side = currentSideTab;
-      startStream(file.format, file.paused, file.mode, file);
-      if (side) selectSidePane(side);
     }
 
     function renderFileMenuJsonRecents() {
