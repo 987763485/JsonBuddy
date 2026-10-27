@@ -113,6 +113,11 @@ fn open_json_document(state: State<'_, AppState>, path: String) -> Result<JsonDo
 }
 
 #[tauri::command]
+fn save_text_file(path: String, text: String) -> Result<(), String> {
+    crate::data::write_text(std::path::Path::new(&path), &text)
+}
+
+#[tauri::command]
 fn save_json_document(
     state: State<'_, AppState>,
     path: String,
@@ -301,6 +306,7 @@ pub fn run() {
             create_json_document,
             open_json_document,
             save_json_document,
+            save_text_file,
             remove_recent_json_document,
             list_recent_streams,
             open_stream,

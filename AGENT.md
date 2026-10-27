@@ -4,7 +4,7 @@
 
 我正在把 `design/prototype.html` 中已锁定的 UI，实现为 JSON Buddy 的 Tauri 2 桌面应用：JSON 编辑与多视图、JSON 对比、JSONL / `.jsonl.zstd` 流监控、JSON Mock 服务、审计、设置、双语界面与本地数据目录。
 
-当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。下一步是代码生成视图与其余 JSON 工具能力。
+当前阶段：Tauri 界面已切换为锁定原型 HTML/CSS，并通过 `ui/bridge.ts` 桥接 Rust 后端。设置、语言、主题、JSON 最近文件、打开/新建/保存、CodeMirror 编辑、对比、JSON 流与 Mock 已接通真实后端；桌面窗口内容铺满 webview，原型标题栏为原生交通灯预留位置。下一步是导入导出、搜索与流缓冲虚拟列表等其余 JSON 工具能力。
 
 ## 模块进度
 

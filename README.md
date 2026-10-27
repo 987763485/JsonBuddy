@@ -19,12 +19,13 @@ UI 已在 `design/prototype.html` 中锁定；桌面应用直接加载该原型�
 - 树视图：第六种视图，支持展开/折叠、节点筛选、路径检查器、复制路径与跳转源码
 - 表格视图：真实 JSON 分节、列选择、行筛选、单元格检查器与源码定位
 - 图形视图：真实 JSON 节点/边、拖拽、缩放、布局切换与迷你地图
+- 代码生成：从当前 JSON 生成 TypeScript、JavaScript、Java、C#、Go、Rust、Swift、Kotlin、Python、PHP、Dart 与 JSON Schema
 - JSON Mock 桥接：项目持久化、端点编辑、响应体 CodeMirror 编辑、生成/导入/导出、真实请求日志、HTTP/HTTPS 本地服务启停
 - 在原型编辑器与 Mock 响应区域注入 CodeMirror 6，保持原型的排版与语法色
 - 格式化、压缩、校验仍由原型交互驱动，保存写入真实文件
 - 成功 / 失败 Toast 使用原型现有组件
 
-代码生成仍使用原型示例，待接入真实 JSON。React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
+导入导出、搜索与流缓冲虚拟列表等仍待完善。React 版本（`src/`）保留为业务与交互参考，不参与 Tauri 界面构建。
 
 ## 技术栈
 
