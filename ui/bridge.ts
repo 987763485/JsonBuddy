@@ -611,6 +611,7 @@ function ensureEditor(): EditorView | null {
                 // The prototype may be switching pages while a keystroke lands.
               }
             }, 130);
+            scheduleTreeRender();
           })
         ]
       })
@@ -662,6 +663,7 @@ function patchDocumentFunctions(): void {
   w.renderCode = () => {
     originalRenderCode();
     syncEditor(true);
+    scheduleTreeRender();
   };
   w.applyTheme = (theme: string) => {
     originalApplyTheme(theme);
@@ -1713,6 +1715,526 @@ function patchAuditFlow(): void {
     });
 }
 
+/* ------------------------------------------------------------
+   Tree view
+   ------------------------------------------------------------ */
+
+interface TreeNodeInfo {
+  type: string;
+  preview: string;
+  path: string;
+}
+
+const treeNodeIndex = new Map<string, TreeNodeInfo>();
+const treeExpanded = new Set<string>();
+let treeSelectedPath = "$";
+let treeQuery = "";
+let treeInstalled = false;
+let treeRenderTimer: number | null = null;
+
+const treeStyle = document.createElement("style");
+treeStyle.textContent = `
+  .buddy-tree-view {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: none;
+    flex-direction: column;
+    gap: 9px;
+    padding: 12px 14px 9px;
+    overflow: hidden;
+  }
+  .app[data-view="tree"] .buddy-tree-view { display: flex; }
+  .app[data-view="tree"] .graph-scene,
+  .app[data-view="tree"] .canvas-toolbar,
+  .app[data-view="tree"] .canvas-right-tools,
+  .app[data-view="tree"] .minimap,
+  .app[data-view="tree"] .table-view,
+  .app[data-view="tree"] .code-view { display: none; }
+  .buddy-tree-view .table-scroll { padding-bottom: 0; }
+  .buddy-tree-view .table-sheet { min-width: 520px; }
+  .tree-body { padding: 4px 0 5px; }
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 25px;
+    padding-right: 14px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--code-plain);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .tree-row:hover { background: var(--hover); }
+  .tree-row.sel { background: var(--accent-soft); }
+  .tree-row.sel .tree-key { color: var(--accent-2); }
+  [data-theme="dark"] .tree-row.sel .tree-key { color: var(--accent); }
+  .tree-toggle {
+    width: 17px;
+    height: 17px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    color: var(--ink-4);
+  }
+  .tree-toggle:hover { background: var(--hover-strong); color: var(--ink-2); }
+  .tree-toggle .i { transition: transform .12s ease; }
+  .tree-toggle.open .i { transform: rotate(90deg); }
+  .tree-toggle.placeholder { visibility: hidden; }
+  .tree-key { color: var(--code-key); }
+  .tree-key.index { color: var(--ink-3); min-width: 22px; text-align: right; }
+  .tree-colon { color: var(--code-punct); }
+  .tree-value.str { color: var(--code-string); }
+  .tree-value.num { color: var(--code-number); }
+  .tree-value.bool { color: var(--code-bool); }
+  .tree-value.null { color: var(--code-null); }
+  .tree-type {
+    font-family: var(--font-ui);
+    font-size: 8px;
+    font-weight: 650;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    background: var(--hover-strong);
+    border-radius: 3px;
+    padding: 1px 4px;
+  }
+  .tree-count { font-family: var(--font-ui); font-size: 8.5px; color: var(--ink-3); }
+  .tree-path {
+    margin-left: auto;
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink-4);
+    font-size: 9px;
+  }
+  .tree-empty { padding: 18px 12px; font-size: 10px; color: var(--ink-3); text-align: center; }
+  .tree-muted { color: var(--ink-3); }
+`;
+document.head.appendChild(treeStyle);
+
+function treeTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function treePreview(value: unknown, limit = 120): string {
+  if (value === null) return "null";
+  if (typeof value === "string") {
+    const text = value.length > limit ? `${value.slice(0, limit)}…` : value;
+    return JSON.stringify(text);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) return `[${value.length} items]`;
+  if (typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).length} keys}`;
+  }
+  return String(value);
+}
+
+function treePathFor(parent: string, key: string | number, index: boolean): string {
+  if (index) return `${parent}[${key}]`;
+  const text = String(key);
+  return /^[A-Za-z_$][\w$]*$/.test(text)
+    ? `${parent}.${text}`
+    : `${parent}[${JSON.stringify(text)}]`;
+}
+
+function treeStats(value: unknown): { nodes: number; depth: number } {
+  let nodes = 0;
+  let depth = 0;
+  const walk = (item: unknown, level: number) => {
+    if (nodes > 200_000) return;
+    nodes += 1;
+    depth = Math.max(depth, level);
+    if (Array.isArray(item)) {
+      for (const child of item) walk(child, level + 1);
+    } else if (item && typeof item === "object") {
+      for (const child of Object.values(item as Record<string, unknown>)) {
+        walk(child, level + 1);
+      }
+    }
+  };
+  walk(value, 0);
+  return { nodes, depth };
+}
+
+function treeSubtreeMatches(
+  key: string,
+  value: unknown,
+  path: string,
+  query: string
+): boolean {
+  if (!query) return true;
+  if (
+    key.toLowerCase().includes(query) ||
+    path.toLowerCase().includes(query) ||
+    treePreview(value).toLowerCase().includes(query)
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some((child, index) =>
+      treeSubtreeMatches(String(index), child, treePathFor(path, index, true), query)
+    );
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).some(([name, child]) =>
+      treeSubtreeMatches(name, child, treePathFor(path, name, false), query)
+    );
+  }
+  return false;
+}
+
+function treeScalarHtml(value: unknown): string {
+  const type = treeTypeOf(value);
+  const text = w.escHtml(treePreview(value));
+  return `<span class="tree-value ${type}">${text}</span>`;
+}
+
+interface TreeRenderBudget {
+  remaining: number;
+  truncated: boolean;
+}
+
+function renderTreeRows(
+  key: string,
+  value: unknown,
+  path: string,
+  depth: number,
+  index: boolean,
+  query: string,
+  budget: TreeRenderBudget
+): string {
+  if (budget.remaining <= 0) {
+    budget.truncated = true;
+    return "";
+  }
+  if (!treeSubtreeMatches(key, value, path, query)) return "";
+  budget.remaining -= 1;
+  const type = treeTypeOf(value);
+  const expandable =
+    (type === "object" && Object.keys(value as Record<string, unknown>).length > 0) ||
+    (type === "array" && (value as unknown[]).length > 0);
+  const expanded = expandable && (query ? true : treeExpanded.has(path));
+  treeNodeIndex.set(path, {
+    type,
+    preview: treePreview(value),
+    path
+  });
+  const pad = 8 + depth * 16;
+  const toggle = expandable
+    ? `<button class="tree-toggle${expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
+        path
+      )}" title="${expanded ? "Collapse" : "Expand"}">
+        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
+      </button>`
+    : '<span class="tree-toggle placeholder"></span>';
+  const keyHtml = index
+    ? `<span class="tree-key index">${w.escHtml(key)}</span>`
+    : `<span class="tree-key">${w.escHtml(key)}</span>`;
+  let valueHtml = "";
+  if (type === "object") {
+    valueHtml = `<span class="tree-count">{${Object.keys(value as Record<string, unknown>).length} keys}</span>`;
+  } else if (type === "array") {
+    valueHtml = `<span class="tree-count">[${(value as unknown[]).length} items]</span>`;
+  } else {
+    valueHtml = treeScalarHtml(value);
+  }
+  let html = `<div class="tree-row${path === treeSelectedPath ? " sel" : ""}" data-path="${w.escHtml(
+    path
+  )}" onclick="buddyTreeSelect(this)" style="padding-left:${pad}px">
+    ${toggle}${keyHtml}<span class="tree-colon">:</span>${valueHtml}
+    <span class="tree-type">${type}</span>
+    <span class="tree-path">${w.escHtml(path)}</span>
+  </div>`;
+  if (expanded) {
+    if (type === "array") {
+      (value as unknown[]).forEach((child, childIndex) => {
+        html += renderTreeRows(
+          String(childIndex),
+          child,
+          treePathFor(path, childIndex, true),
+          depth + 1,
+          true,
+          query,
+          budget
+        );
+      });
+    } else if (type === "object") {
+      Object.entries(value as Record<string, unknown>).forEach(([name, child]) => {
+        html += renderTreeRows(
+          name,
+          child,
+          treePathFor(path, name, false),
+          depth + 1,
+          false,
+          query,
+          budget
+        );
+      });
+    }
+  }
+  return html;
+}
+
+function updateTreeInspector(): void {
+  const info = treeNodeIndex.get(treeSelectedPath);
+  const pathEl = document.getElementById("buddyTreePath");
+  const typeEl = document.getElementById("buddyTreeType");
+  const valueEl = document.getElementById("buddyTreeValue");
+  if (pathEl) pathEl.textContent = treeSelectedPath;
+  if (typeEl) typeEl.textContent = info?.type ?? "unknown";
+  if (valueEl) valueEl.textContent = info?.preview ?? "—";
+}
+
+function renderTreeView(): void {
+  const host = document.getElementById("buddyTreeBody");
+  if (!host) return;
+  const count = document.getElementById("buddyTreeCount");
+  const doc = currentDoc();
+  const source = doc?.text ?? "";
+  if (!source.trim()) {
+    host.innerHTML =
+      '<div class="tree-empty">Open a JSON document to inspect its tree.</div>';
+    if (count) count.textContent = "No document";
+    treeNodeIndex.clear();
+    updateTreeInspector();
+    return;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    host.innerHTML =
+      '<div class="tree-empty">The document is not valid JSON. Fix the syntax to inspect the tree.</div>';
+    if (count) count.textContent = "Invalid JSON";
+    treeNodeIndex.clear();
+    updateTreeInspector();
+    return;
+  }
+  const stats = treeStats(value);
+  if (!treeExpanded.has("$") && treeExpanded.size === 0) treeExpanded.add("$");
+  treeNodeIndex.clear();
+  const budget: TreeRenderBudget = { remaining: 4000, truncated: false };
+  const html = renderTreeRows("$", value, "$", 0, false, treeQuery, budget);
+  host.innerHTML = `<div class="tree-body">${
+    html || '<div class="tree-empty">No nodes match this filter.</div>'
+  }</div>${
+    budget.truncated
+      ? '<div class="tree-empty">Showing the first 4,000 nodes.</div>'
+      : ""
+  }`;
+  host
+    .querySelectorAll<HTMLElement>("[data-tree-toggle]")
+    .forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const path = button.dataset.treeToggle;
+        if (path) w.buddyTreeToggle(path);
+      });
+    });
+  if (!treeNodeIndex.has(treeSelectedPath)) {
+    treeSelectedPath = "$";
+    host.querySelector<HTMLElement>('.tree-row[data-path="$"]')?.classList.add("sel");
+  }
+  if (count) {
+    count.textContent = budget.truncated
+      ? `4,000 of ${stats.nodes.toLocaleString("en-US")} nodes`
+      : `${stats.nodes.toLocaleString("en-US")} nodes · ${stats.depth} levels`;
+  }
+  updateTreeInspector();
+}
+
+function scheduleTreeRender(delay = 160): void {
+  if (!treeInstalled) return;
+  if (treeRenderTimer !== null) window.clearTimeout(treeRenderTimer);
+  treeRenderTimer = window.setTimeout(() => {
+    treeRenderTimer = null;
+    let view = "";
+    try {
+      view = evalGlobal<string>("app.dataset.view");
+    } catch {
+      view = "";
+    }
+    if (view === "tree") renderTreeView();
+  }, delay);
+}
+
+function treeAllExpandablePaths(): string[] {
+  const doc = currentDoc();
+  if (!doc?.text) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(doc.text);
+  } catch {
+    return [];
+  }
+  const paths: string[] = [];
+  const walk = (item: unknown, path: string) => {
+    if (paths.length > 4000) return;
+    if (Array.isArray(item) && item.length) {
+      paths.push(path);
+      item.forEach((child, index) => walk(child, treePathFor(path, index, true)));
+    } else if (item && typeof item === "object" && Object.keys(item).length) {
+      paths.push(path);
+      Object.entries(item as Record<string, unknown>).forEach(([key, child]) => {
+        walk(child, treePathFor(path, key, false));
+      });
+    }
+  };
+  walk(value, "$");
+  return paths;
+}
+
+function updateTreeLanguage(): void {
+  let lang = "en";
+  try {
+    lang = evalGlobal<string>("app.dataset.lang") ?? "en";
+  } catch {
+    lang = "en";
+  }
+  const zh = lang === "zh";
+  const label = document.getElementById("buddyTreeViewLabel");
+  if (label) label.textContent = zh ? "树" : "Tree";
+  const heading = document.getElementById("buddyTreeLabel");
+  if (heading) heading.textContent = zh ? "树" : "TREE";
+  const filter = document.getElementById("buddyTreeFilter") as HTMLInputElement | null;
+  if (filter) filter.placeholder = zh ? "筛选节点…" : "Filter nodes…";
+  const expand = document.getElementById("buddyTreeExpandLabel");
+  if (expand) expand.textContent = zh ? "展开" : "Expand";
+  const collapse = document.getElementById("buddyTreeCollapseLabel");
+  if (collapse) collapse.textContent = zh ? "折叠" : "Collapse";
+  const hint = document.getElementById("buddyTreeHint");
+  if (hint) {
+    hint.textContent = zh
+      ? "点击节点查看路径 · 点击箭头展开 · 路径可复制"
+      : "Click a node to inspect · use arrows to expand · copy its path";
+  }
+}
+
+function installTreeView(): void {
+  if (treeInstalled) return;
+  treeInstalled = true;
+  const seg = document.querySelector(".editor-toolbar .seg[role='tablist']");
+  if (seg && !seg.querySelector("[data-view-btn='tree']")) {
+    const button = document.createElement("button");
+    button.dataset.viewBtn = "tree";
+    button.innerHTML =
+      '<svg class="i sm" viewBox="0 0 24 24"><use href="#i-tree"/></svg><span id="buddyTreeViewLabel">Tree</span>';
+    button.addEventListener("click", () => w.setView("tree"));
+    const tableButton = seg.querySelector("[data-view-btn='table']");
+    if (tableButton) tableButton.insertAdjacentElement("afterend", button);
+    else seg.appendChild(button);
+  }
+  const canvas = document.querySelector(".canvas");
+  const table = canvas?.querySelector(".table-view");
+  if (canvas && !document.getElementById("buddyTreeView")) {
+    const view = document.createElement("div");
+    view.className = "buddy-tree-view";
+    view.id = "buddyTreeView";
+    view.setAttribute("aria-label", "Tree view");
+    view.innerHTML = `<div class="table-toolbar">
+      <span class="tt-label" id="buddyTreeLabel">TREE</span>
+      <span class="tt-count" id="buddyTreeCount">0 nodes</span>
+      <span class="spacer"></span>
+      <button class="cv-pill" onclick="buddyTreeExpandAll()" title="Expand all">
+        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-plus"/></svg><span id="buddyTreeExpandLabel">Expand</span>
+      </button>
+      <button class="cv-pill" onclick="buddyTreeCollapseAll()" title="Collapse all">
+        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-minus"/></svg><span id="buddyTreeCollapseLabel">Collapse</span>
+      </button>
+      <label class="table-filter">
+        <svg class="i xs" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+        <input id="buddyTreeFilter" type="text" placeholder="Filter nodes…" aria-label="Filter nodes" oninput="buddyTreeFilter(this.value)" />
+      </label>
+    </div>
+    <div class="table-scroll">
+      <div class="table-sheet" id="buddyTreeBody"></div>
+      <div class="table-inspector">
+        <span class="insp-path" id="buddyTreePath">$</span>
+        <span class="insp-type" id="buddyTreeType">object</span>
+        <span class="insp-val" id="buddyTreeValue">—</span>
+        <span class="spacer"></span>
+        <button class="insp-btn" onclick="buddyTreeCopyPath()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-copy"/></svg>Copy path</button>
+        <button class="insp-btn" onclick="buddyTreeReveal()"><svg class="i xs" viewBox="0 0 24 24"><use href="#i-code"/></svg>Reveal in source</button>
+      </div>
+      <div class="table-hint" id="buddyTreeHint">Click a node to inspect · use arrows to expand · copy its path</div>
+    </div>`;
+    if (table) table.insertAdjacentElement("afterend", view);
+    else canvas.appendChild(view);
+  }
+
+  const originalSetView = w.setView;
+  w.setView = (view: string) => {
+    originalSetView(view);
+    if (view === "tree") {
+      updateTreeLanguage();
+      renderTreeView();
+    }
+  };
+  const originalApplyLanguage = w.applyLanguage;
+  w.applyLanguage = (language: string) => {
+    originalApplyLanguage(language);
+    updateTreeLanguage();
+  };
+  w.buddyTreeToggle = (path: string) => {
+    if (treeExpanded.has(path)) treeExpanded.delete(path);
+    else treeExpanded.add(path);
+    renderTreeView();
+  };
+  w.buddyTreeSelect = (row: HTMLElement) => {
+    const path = row.dataset.path;
+    if (!path) return;
+    treeSelectedPath = path;
+    document
+      .querySelectorAll("#buddyTreeBody .tree-row.sel")
+      .forEach((element) => element.classList.remove("sel"));
+    row.classList.add("sel");
+    updateTreeInspector();
+  };
+  w.buddyTreeFilter = (value: string) => {
+    treeQuery = String(value ?? "").trim().toLowerCase();
+    renderTreeView();
+  };
+  w.buddyTreeExpandAll = () => {
+    for (const path of treeAllExpandablePaths()) treeExpanded.add(path);
+    renderTreeView();
+  };
+  w.buddyTreeCollapseAll = () => {
+    treeExpanded.clear();
+    treeExpanded.add("$");
+    renderTreeView();
+  };
+  w.buddyTreeCopyPath = () => {
+    w.copyText(treeSelectedPath, "Path copied", treeSelectedPath);
+  };
+  w.buddyTreeReveal = () => {
+    w.setView("text");
+    const match = treeSelectedPath.match(/([A-Za-z_$][\w$]*)\]?$/);
+    if (match && editor) {
+      const needle = `"${match[1]}"`;
+      const text = editor.state.doc.toString();
+      const index = text.indexOf(needle);
+      if (index >= 0) {
+        editor.dispatch({
+          selection: { anchor: index, head: index + needle.length },
+          scrollIntoView: true
+        });
+        editor.focus();
+      }
+    }
+    toast("Revealed in source", treeSelectedPath);
+  };
+  updateTreeLanguage();
+  renderTreeView();
+}
+
 function patchStreamFlow(): void {
   const originalRenderStreamLines = w.renderStreamLines;
   const originalOpenMonitorRecents = w.openMonitorRecents;
@@ -2757,6 +3279,7 @@ async function bootstrap(): Promise<void> {
     patchMockFlow();
     startMockEventBridge();
     patchAuditFlow();
+    installTreeView();
     applyBackendSettings(data.settings);
     seedRecents(data.recents);
     seedStreamRecents(data.streams ?? []);
