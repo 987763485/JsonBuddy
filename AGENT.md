@@ -54,9 +54,10 @@
 | 文档 | 用途 |
 | --- | --- |
 | [`AGENT.md`](./AGENT.md) | Agent 角色、约束、当前工作与文档索引 |
-| [`design/README.md`](./design/README.md) | 产品设计、交互说明、Tauri 实现说明与 20 项 v1.0 决策 |
+| [`design/README.md`](./design/README.md) | 产品设计、交互说明与 Tauri 实现说明 |
 | [`design/prototype.html`](./design/prototype.html) | UI 源文件（含对话轨迹页），构建时同步到应用 |
-| [`README.md`](./README.md) | 应用工程入口、启动说明与数据目录 |
+| [`README.md`](./README.md) | English README：应用入口、编译运行、架构、开源协议 |
+| [`README.zh-CN.md`](./README.zh-CN.md) | 中文 README |
 | [`docs/architecture.md`](./docs/architecture.md) | 前端、Rust 后端、数据目录、模块边界与测试策略 |
 
 ## 严格性约束
