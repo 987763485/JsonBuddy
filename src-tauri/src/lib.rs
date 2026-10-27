@@ -9,6 +9,7 @@ mod network;
 mod settings;
 mod state;
 mod streams;
+mod tree;
 mod yaml;
 
 use audit::{AuditConfig, AuditEntry, AuditState};
@@ -47,6 +48,29 @@ async fn generate_code(
     })
     .await
     .map_err(|error| format!("code generation task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn tree_snapshot(
+    text: Option<String>,
+    revision: u64,
+    expanded: Vec<String>,
+    query: String,
+) -> Result<tree::TreeSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || tree::snapshot(text, revision, expanded, query))
+        .await
+        .map_err(|error| format!("tree generation task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn tree_expandable_paths(
+    text: Option<String>,
+    revision: u64,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || tree::expandable_paths(text, revision, limit))
+        .await
+        .map_err(|error| format!("tree generation task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -439,6 +463,8 @@ pub fn run() {
             parse_yaml_document,
             test_local_request,
             generate_code,
+            tree_snapshot,
+            tree_expandable_paths,
             remove_recent_json_document,
             list_recent_streams,
             open_stream,

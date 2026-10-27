@@ -825,6 +825,7 @@ const BUDDY_TOAST_ZH: Record<string, string> = {
   "Could not acknowledge audit event": "无法确认审计事件",
   "Could not save generated code": "无法保存生成的代码",
   "Could not generate code": "无法生成代码",
+  "Could not build tree view": "无法生成树视图",
   "Large files use text comparison": "大文件将使用文本对比",
   "Nothing to export": "没有可导出内容",
   "No tabular data found.": "未找到表格数据。",
@@ -3246,12 +3247,35 @@ interface TreeNodeInfo {
   path: string;
 }
 
+interface RustTreeRow {
+  key: string;
+  path: string;
+  depth: number;
+  index: boolean;
+  kind: string;
+  preview: string;
+  expandable: boolean;
+  expanded: boolean;
+  count: number | null;
+}
+
+interface RustTreeSnapshot {
+  status: "ok" | "empty" | "invalid" | string;
+  rows: RustTreeRow[];
+  nodes: number;
+  depth: number;
+  truncated: boolean;
+}
+
 const treeNodeIndex = new Map<string, TreeNodeInfo>();
 const treeExpanded = new Set<string>();
 let treeSelectedPath = "$";
 let treeQuery = "";
 let treeInstalled = false;
 let treeRenderTimer: number | null = null;
+let treeRenderSeq = 0;
+let treeCachedRevision = -1;
+let treeFilterTimer: number | null = null;
 
 const treeStyle = document.createElement("style");
 treeStyle.textContent = `
@@ -3371,142 +3395,43 @@ function treePathFor(parent: string, key: string | number, index: boolean): stri
     : `${parent}[${JSON.stringify(text)}]`;
 }
 
-function treeStats(value: unknown): { nodes: number; depth: number } {
-  let nodes = 0;
-  let depth = 0;
-  const walk = (item: unknown, level: number) => {
-    if (nodes > 200_000) return;
-    nodes += 1;
-    depth = Math.max(depth, level);
-    if (Array.isArray(item)) {
-      for (const child of item) walk(child, level + 1);
-    } else if (item && typeof item === "object") {
-      for (const child of Object.values(item as Record<string, unknown>)) {
-        walk(child, level + 1);
-      }
-    }
-  };
-  walk(value, 0);
-  return { nodes, depth };
-}
-
-function treeSubtreeMatches(
-  key: string,
-  value: unknown,
-  path: string,
-  query: string
-): boolean {
-  if (!query) return true;
-  if (
-    key.toLowerCase().includes(query) ||
-    path.toLowerCase().includes(query) ||
-    treePreview(value).toLowerCase().includes(query)
-  ) {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    return value.some((child, index) =>
-      treeSubtreeMatches(String(index), child, treePathFor(path, index, true), query)
-    );
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>).some(([name, child]) =>
-      treeSubtreeMatches(name, child, treePathFor(path, name, false), query)
-    );
-  }
-  return false;
-}
-
-function treeScalarHtml(value: unknown): string {
-  const type = treeTypeOf(value);
-  const text = w.escHtml(treePreview(value));
-  return `<span class="tree-value ${type}">${text}</span>`;
-}
-
-interface TreeRenderBudget {
-  remaining: number;
-  truncated: boolean;
-}
-
-function renderTreeRows(
-  key: string,
-  value: unknown,
-  path: string,
-  depth: number,
-  index: boolean,
-  query: string,
-  budget: TreeRenderBudget
-): string {
-  if (budget.remaining <= 0) {
-    budget.truncated = true;
-    return "";
-  }
-  if (!treeSubtreeMatches(key, value, path, query)) return "";
-  budget.remaining -= 1;
-  const type = treeTypeOf(value);
-  const expandable =
-    (type === "object" && Object.keys(value as Record<string, unknown>).length > 0) ||
-    (type === "array" && (value as unknown[]).length > 0);
-  const expanded = expandable && (query ? true : treeExpanded.has(path));
-  treeNodeIndex.set(path, {
-    type,
-    preview: treePreview(value),
-    path
-  });
-  const pad = 8 + depth * 16;
-  const toggle = expandable
-    ? `<button class="tree-toggle${expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
-        path
-      )}" title="${viewLanguageIsZh() ? (expanded ? "折叠" : "展开") : expanded ? "Collapse" : "Expand"}">
+function treeRowHtml(row: RustTreeRow): string {
+  const pad = 8 + row.depth * 16;
+  const toggle = row.expandable
+    ? `<button class="tree-toggle${row.expanded ? " open" : ""}" data-tree-toggle="${w.escHtml(
+        row.path
+      )}" title="${
+        viewLanguageIsZh()
+          ? row.expanded
+            ? "折叠"
+            : "展开"
+          : row.expanded
+            ? "Collapse"
+            : "Expand"
+      }">
         <svg class="i xs" viewBox="0 0 24 24"><use href="#i-chev-right"/></svg>
       </button>`
     : '<span class="tree-toggle placeholder"></span>';
-  const keyHtml = index
-    ? `<span class="tree-key index">${w.escHtml(key)}</span>`
-    : `<span class="tree-key">${w.escHtml(key)}</span>`;
+  const keyHtml = row.index
+    ? `<span class="tree-key index">${w.escHtml(row.key)}</span>`
+    : `<span class="tree-key">${w.escHtml(row.key)}</span>`;
   let valueHtml = "";
-  if (type === "object") {
-    valueHtml = `<span class="tree-count">{${Object.keys(value as Record<string, unknown>).length} keys}</span>`;
-  } else if (type === "array") {
-    valueHtml = `<span class="tree-count">[${(value as unknown[]).length} items]</span>`;
+  if (row.kind === "object") {
+    valueHtml = `<span class="tree-count">{${row.count ?? 0} keys}</span>`;
+  } else if (row.kind === "array") {
+    valueHtml = `<span class="tree-count">[${row.count ?? 0} items]</span>`;
   } else {
-    valueHtml = treeScalarHtml(value);
+    valueHtml = `<span class="tree-value ${w.escHtml(row.kind)}">${w.escHtml(
+      row.preview
+    )}</span>`;
   }
-  let html = `<div class="tree-row${path === treeSelectedPath ? " sel" : ""}" data-path="${w.escHtml(
-    path
-  )}" tabindex="0" onclick="buddyTreeSelect(this)" style="padding-left:${pad}px">
+  return `<div class="tree-row${row.path === treeSelectedPath ? " sel" : ""}" data-path="${w.escHtml(
+    row.path
+  )}" tabindex="0" style="padding-left:${pad}px">
     ${toggle}${keyHtml}<span class="tree-colon">:</span>${valueHtml}
-    <span class="tree-type">${type}</span>
-    <span class="tree-path">${w.escHtml(path)}</span>
+    <span class="tree-type">${w.escHtml(row.kind)}</span>
+    <span class="tree-path">${w.escHtml(row.path)}</span>
   </div>`;
-  if (expanded) {
-    if (type === "array") {
-      (value as unknown[]).forEach((child, childIndex) => {
-        html += renderTreeRows(
-          String(childIndex),
-          child,
-          treePathFor(path, childIndex, true),
-          depth + 1,
-          true,
-          query,
-          budget
-        );
-      });
-    } else if (type === "object") {
-      Object.entries(value as Record<string, unknown>).forEach(([name, child]) => {
-        html += renderTreeRows(
-          name,
-          child,
-          treePathFor(path, name, false),
-          depth + 1,
-          false,
-          query,
-          budget
-        );
-      });
-    }
-  }
-  return html;
 }
 
 function updateTreeInspector(): void {
@@ -3519,67 +3444,121 @@ function updateTreeInspector(): void {
   if (valueEl) valueEl.textContent = info?.preview ?? "—";
 }
 
-function renderTreeView(): void {
+async function renderTreeView(): Promise<void> {
   const host = document.getElementById("buddyTreeBody");
   if (!host) return;
+  const seq = ++treeRenderSeq;
   const focusedPath = (document.activeElement as HTMLElement | null)
     ?.closest?.(".tree-row")
     ?.getAttribute("data-path");
   const count = document.getElementById("buddyTreeCount");
   const doc = currentDoc();
   const source = doc?.text ?? "";
-  if (!source.trim()) {
-    host.innerHTML =
-      `<div class="tree-empty">${viewLanguageIsZh() ? "打开 JSON 文档以查看树。" : "Open a JSON document to inspect its tree."}</div>`;
-    if (count) count.textContent = viewLanguageIsZh() ? "无文档" : "No document";
-    treeNodeIndex.clear();
-    updateTreeInspector();
-    return;
-  }
-  let value: unknown;
+  if (treeExpanded.size === 0) treeExpanded.add("$");
+  const revision = codegenRevision;
+  const includeText = treeCachedRevision !== revision;
+  let snapshot: RustTreeSnapshot;
   try {
-    value = JSON.parse(source);
-  } catch {
-    host.innerHTML =
-      `<div class="tree-empty">${viewLanguageIsZh() ? "文档不是有效 JSON。修复语法后查看树。" : "The document is not valid JSON. Fix the syntax to inspect the tree."}</div>`;
-    if (count) count.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
+    snapshot = await invoke<RustTreeSnapshot>("tree_snapshot", {
+      text: includeText ? source : null,
+      revision,
+      expanded: Array.from(treeExpanded),
+      query: treeQuery
+    });
+    treeCachedRevision = revision;
+  } catch (error) {
+    if (seq !== treeRenderSeq) return;
     treeNodeIndex.clear();
+    treeSelectedPath = "$";
+    host.innerHTML = `<div class="tree-empty">${
+      viewLanguageIsZh() ? "无法生成树视图。" : "Could not build the tree view."
+    }</div>`;
+    if (count) count.textContent = viewLanguageIsZh() ? "树不可用" : "Tree unavailable";
+    updateTreeInspector();
+    toast("Could not build tree view", String(error));
+    return;
+  }
+  if (seq !== treeRenderSeq) return;
+  try {
+    if (evalGlobal<string>("app.dataset.view") !== "tree") return;
+  } catch {
+    return;
+  }
+  if (snapshot.status === "empty") {
+    treeNodeIndex.clear();
+    treeSelectedPath = "$";
+    host.innerHTML = `<div class="tree-empty">${
+      viewLanguageIsZh() ? "打开 JSON 文档以查看树。" : "Open a JSON document to inspect its tree."
+    }</div>`;
+    if (count) count.textContent = viewLanguageIsZh() ? "无文档" : "No document";
     updateTreeInspector();
     return;
   }
-  const stats = treeStats(value);
-  if (!treeExpanded.has("$") && treeExpanded.size === 0) treeExpanded.add("$");
+  if (snapshot.status !== "ok") {
+    treeNodeIndex.clear();
+    treeSelectedPath = "$";
+    host.innerHTML = `<div class="tree-empty">${
+      viewLanguageIsZh()
+        ? "文档不是有效 JSON。修复语法后查看树。"
+        : "The document is not valid JSON. Fix the syntax to inspect the tree."
+    }</div>`;
+    if (count) count.textContent = viewLanguageIsZh() ? "JSON 无效" : "Invalid JSON";
+    updateTreeInspector();
+    return;
+  }
   treeNodeIndex.clear();
-  const budget: TreeRenderBudget = { remaining: 4000, truncated: false };
-  const html = renderTreeRows("$", value, "$", 0, false, treeQuery, budget);
+  for (const row of snapshot.rows) {
+    treeNodeIndex.set(row.path, {
+      type: row.kind,
+      preview: row.preview,
+      path: row.path
+    });
+  }
+  if (!treeNodeIndex.has(treeSelectedPath)) treeSelectedPath = "$";
+  const html = snapshot.rows.map(treeRowHtml).join("");
   host.innerHTML = `<div class="tree-body">${
-    html || `<div class="tree-empty">${viewLanguageIsZh() ? "没有节点匹配此筛选。" : "No nodes match this filter."}</div>`
+    html ||
+    `<div class="tree-empty">${
+      viewLanguageIsZh() ? "没有节点匹配此筛选。" : "No nodes match this filter."
+    }</div>`
   }</div>${
-    budget.truncated
-      ? `<div class="tree-empty">${viewLanguageIsZh() ? "显示前 4,000 个节点。" : "Showing the first 4,000 nodes."}</div>`
+    snapshot.truncated
+      ? `<div class="tree-empty">${
+          viewLanguageIsZh()
+            ? `显示前 ${snapshot.rows.length.toLocaleString("en-US")} 个节点。`
+            : `Showing the first ${snapshot.rows.length.toLocaleString("en-US")} nodes.`
+        }</div>`
       : ""
   }`;
-  host
-    .querySelectorAll<HTMLElement>("[data-tree-toggle]")
-    .forEach((button) => {
-      button.addEventListener("click", (event) => {
+  if (host.dataset.treeBound !== "1") {
+    host.dataset.treeBound = "1";
+    host.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const toggle = target?.closest<HTMLElement>("[data-tree-toggle]");
+      if (toggle) {
         event.stopPropagation();
-        const path = button.dataset.treeToggle;
+        const path = toggle.dataset.treeToggle;
         if (path) w.buddyTreeToggle(path);
-      });
+        return;
+      }
+      const row = target?.closest<HTMLElement>(".tree-row");
+      if (row) w.buddyTreeSelect(row);
     });
-  const treeRows = Array.from(host.querySelectorAll<HTMLElement>(".tree-row"));
-  treeRows.forEach((row, index) => {
-    row.addEventListener("keydown", (event) => {
-      const path = row.dataset.path;
-      if (!path) return;
-      const toggle = row.querySelector<HTMLElement>(
-        ".tree-toggle:not(.placeholder)"
-      );
+    host.addEventListener("keydown", (event) => {
+      const row =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>(".tree-row")
+          : null;
+      const path = row?.dataset.path;
+      if (!row || !path) return;
+      const toggle = row.querySelector<HTMLElement>(".tree-toggle:not(.placeholder)");
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
+        const rows = Array.from(host.querySelectorAll<HTMLElement>(".tree-row"));
         const offset = event.key === "ArrowDown" ? 1 : -1;
-        const target = treeRows[Math.max(0, Math.min(treeRows.length - 1, index + offset))];
+        const target = rows[
+          Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + offset))
+        ];
         if (target) {
           w.buddyTreeSelect(target);
           target.focus();
@@ -3593,7 +3572,9 @@ function renderTreeView(): void {
           w.buddyTreeToggle(path);
         } else {
           const parent = path.replace(/\.[^.\[\]]+$|\[\d+\]$/, "");
-          const parentRow = treeRows.find((item) => item.dataset.path === parent);
+          const parentRow = Array.from(
+            host.querySelectorAll<HTMLElement>(".tree-row")
+          ).find((item) => item.dataset.path === parent);
           if (parentRow) {
             w.buddyTreeSelect(parentRow);
             parentRow.focus();
@@ -3604,10 +3585,6 @@ function renderTreeView(): void {
         w.buddyTreeSelect(row);
       }
     });
-  });
-  if (!treeNodeIndex.has(treeSelectedPath)) {
-    treeSelectedPath = "$";
-    host.querySelector<HTMLElement>('.tree-row[data-path="$"]')?.classList.add("sel");
   }
   if (focusedPath) {
     const focusedRow = Array.from(
@@ -3616,13 +3593,17 @@ function renderTreeView(): void {
     focusedRow?.focus({ preventScroll: true });
   }
   if (count) {
-    count.textContent = budget.truncated
+    count.textContent = snapshot.truncated
       ? viewLanguageIsZh()
-        ? `4,000 / ${stats.nodes.toLocaleString("en-US")} 个节点`
-        : `4,000 of ${stats.nodes.toLocaleString("en-US")} nodes`
+        ? `${snapshot.rows.length.toLocaleString("en-US")} / ${snapshot.nodes.toLocaleString(
+            "en-US"
+          )} 个节点`
+        : `${snapshot.rows.length.toLocaleString("en-US")} of ${snapshot.nodes.toLocaleString(
+            "en-US"
+          )} nodes`
       : viewLanguageIsZh()
-        ? `${stats.nodes.toLocaleString("en-US")} 个节点 · ${stats.depth} 层`
-        : `${stats.nodes.toLocaleString("en-US")} nodes · ${stats.depth} levels`;
+        ? `${snapshot.nodes.toLocaleString("en-US")} 个节点 · ${snapshot.depth} 层`
+        : `${snapshot.nodes.toLocaleString("en-US")} nodes · ${snapshot.depth} levels`;
   }
   updateTreeInspector();
 }
@@ -3638,34 +3619,8 @@ function scheduleTreeRender(delay = 160): void {
     } catch {
       view = "";
     }
-    if (view === "tree") renderTreeView();
+    if (view === "tree") void renderTreeView();
   }, delay);
-}
-
-function treeAllExpandablePaths(): string[] {
-  const doc = currentDoc();
-  if (!doc?.text) return [];
-  let value: unknown;
-  try {
-    value = JSON.parse(doc.text);
-  } catch {
-    return [];
-  }
-  const paths: string[] = [];
-  const walk = (item: unknown, path: string) => {
-    if (paths.length > 4000) return;
-    if (Array.isArray(item) && item.length) {
-      paths.push(path);
-      item.forEach((child, index) => walk(child, treePathFor(path, index, true)));
-    } else if (item && typeof item === "object" && Object.keys(item).length) {
-      paths.push(path);
-      Object.entries(item as Record<string, unknown>).forEach(([key, child]) => {
-        walk(child, treePathFor(path, key, false));
-      });
-    }
-  };
-  walk(value, "$");
-  return paths;
 }
 
 function updateTreeLanguage(): void {
@@ -3751,7 +3706,7 @@ function installTreeView(): void {
     originalSetView(view);
     if (view === "tree") {
       updateTreeLanguage();
-      renderTreeView();
+      void renderTreeView();
     }
   };
   const originalApplyLanguage = w.applyLanguage;
@@ -3784,7 +3739,7 @@ function installTreeView(): void {
     } catch {
       view = "";
     }
-    if (view === "tree") renderTreeView();
+    if (view === "tree") void renderTreeView();
     else if (view === "table") renderTableData();
     else if (view === "graph") renderGraphData();
     else if (view === "code") {
@@ -3798,7 +3753,7 @@ function installTreeView(): void {
   w.buddyTreeToggle = (path: string) => {
     if (treeExpanded.has(path)) treeExpanded.delete(path);
     else treeExpanded.add(path);
-    renderTreeView();
+    void renderTreeView();
   };
   w.buddyTreeSelect = (row: HTMLElement) => {
     const path = row.dataset.path;
@@ -3813,16 +3768,33 @@ function installTreeView(): void {
   };
   w.buddyTreeFilter = (value: string) => {
     treeQuery = String(value ?? "").trim().toLowerCase();
-    renderTreeView();
+    if (treeFilterTimer !== null) window.clearTimeout(treeFilterTimer);
+    treeFilterTimer = window.setTimeout(() => {
+      treeFilterTimer = null;
+      void renderTreeView();
+    }, 80);
   };
-  w.buddyTreeExpandAll = () => {
-    for (const path of treeAllExpandablePaths()) treeExpanded.add(path);
-    renderTreeView();
+  w.buddyTreeExpandAll = async () => {
+    const source = currentDoc()?.text ?? "";
+    const revision = codegenRevision;
+    const includeText = treeCachedRevision !== revision;
+    try {
+      const paths = await invoke<string[]>("tree_expandable_paths", {
+        text: includeText ? source : null,
+        revision,
+        limit: 4_000
+      });
+      treeCachedRevision = revision;
+      for (const path of paths) treeExpanded.add(path);
+      void renderTreeView();
+    } catch (error) {
+      toast("Could not build tree view", String(error));
+    }
   };
   w.buddyTreeCollapseAll = () => {
     treeExpanded.clear();
     treeExpanded.add("$");
-    renderTreeView();
+    void renderTreeView();
   };
   w.buddyTreeCopyPath = () => {
     w.copyText(treeSelectedPath, w.t("File path copied"), treeSelectedPath);
@@ -3845,7 +3817,7 @@ function installTreeView(): void {
     toast(w.t("Revealed in source"), treeSelectedPath);
   };
   updateTreeLanguage();
-  renderTreeView();
+  void renderTreeView();
 }
 
 /* ------------------------------------------------------------
