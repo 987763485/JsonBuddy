@@ -111,6 +111,51 @@ monitorChromeStyle.textContent = `
     justify-self: center;
     margin-left: 0;
   }
+  .side-tabs > .side-close {
+    width: 22px;
+    height: 22px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    color: var(--ink-4);
+  }
+  .side-tabs > .side-close .i { color: var(--ink-4); }
+  .side-tabs > .side-close:hover { color: var(--ink-2); }
+  .side-tabs > .side-close:hover .i { color: var(--ink-2); }
+  .live-panel.buddy-side-collapsed,
+  .chat-side.buddy-side-collapsed {
+    flex: 0 0 32px !important;
+    width: 32px !important;
+    min-width: 32px;
+    overflow: hidden;
+  }
+  .live-panel.buddy-side-collapsed > .side-tabs,
+  .live-panel.buddy-side-collapsed > .side-pane,
+  .chat-side.buddy-side-collapsed > .side-tabs,
+  .chat-side.buddy-side-collapsed > .side-pane { display: none !important; }
+  .buddy-side-splitter-hidden { display: none !important; }
+  .buddy-side-reopen {
+    display: none;
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink-3);
+    cursor: pointer;
+  }
+  .live-panel.buddy-side-collapsed > .buddy-side-reopen,
+  .chat-side.buddy-side-collapsed > .buddy-side-reopen { display: flex; }
+  .buddy-side-reopen:hover { background: var(--hover); color: var(--ink-2); }
+  .buddy-side-reopen .i { width: 14px; height: 14px; }
+  .buddy-side-reopen-label {
+    writing-mode: vertical-rl;
+    font-family: var(--font-ui);
+    font-size: 9px;
+    letter-spacing: .08em;
+  }
 `;
 document.head.appendChild(monitorChromeStyle);
 
@@ -123,6 +168,72 @@ function centerMonitorModeSwitch(): void {
 }
 
 centerMonitorModeSwitch();
+
+let monitorSideCollapsed = false;
+
+function monitorSidebars(): HTMLElement[] {
+  return [".live-panel", ".chat-side"]
+    .map((selector) => document.querySelector<HTMLElement>(selector))
+    .filter((element): element is HTMLElement => !!element);
+}
+
+function updateMonitorSidebarChrome(): void {
+  const zh = streamLanguageIsZh();
+  const closeLabel = zh ? "关闭详情" : "Close details";
+  const showLabel = zh ? "显示详情" : "Show details";
+  const railLabel = zh ? "详情" : "Details";
+  for (const sidebar of monitorSidebars()) {
+    sidebar.classList.toggle("buddy-side-collapsed", monitorSideCollapsed);
+    const splitter = sidebar.previousElementSibling;
+    if (splitter instanceof HTMLElement && splitter.classList.contains("cmp-splitter")) {
+      splitter.classList.toggle("buddy-side-splitter-hidden", monitorSideCollapsed);
+    }
+    const close = sidebar.querySelector<HTMLButtonElement>(".side-close");
+    if (close) {
+      close.title = closeLabel;
+      close.setAttribute("aria-label", closeLabel);
+    }
+    const reopen = sidebar.querySelector<HTMLButtonElement>(".buddy-side-reopen");
+    if (reopen) {
+      reopen.title = showLabel;
+      reopen.setAttribute("aria-label", showLabel);
+      const label = reopen.querySelector<HTMLElement>(".buddy-side-reopen-label");
+      if (label) label.textContent = railLabel;
+    }
+  }
+}
+
+function installMonitorSidebarControls(): void {
+  for (const sidebar of monitorSidebars()) {
+    const tabs = sidebar.querySelector<HTMLElement>(".side-tabs");
+    if (tabs && !tabs.querySelector(".side-close")) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "pane-btn side-close";
+      close.innerHTML = '<svg class="i sm" viewBox="0 0 24 24"><use href="#i-x"/></svg>';
+      close.addEventListener("click", () => {
+        monitorSideCollapsed = true;
+        updateMonitorSidebarChrome();
+      });
+      tabs.appendChild(close);
+    }
+    if (!sidebar.querySelector(".buddy-side-reopen")) {
+      const reopen = document.createElement("button");
+      reopen.type = "button";
+      reopen.className = "buddy-side-reopen";
+      reopen.innerHTML =
+        '<svg class="i" viewBox="0 0 24 24"><use href="#i-layout"/></svg><span class="buddy-side-reopen-label"></span>';
+      reopen.addEventListener("click", () => {
+        monitorSideCollapsed = false;
+        updateMonitorSidebarChrome();
+      });
+      sidebar.appendChild(reopen);
+    }
+  }
+  updateMonitorSidebarChrome();
+}
+
+installMonitorSidebarControls();
 
 const splitterStyle = document.createElement("style");
 splitterStyle.id = "buddy-splitter-styles";
@@ -5963,6 +6074,7 @@ function installTreeView(): void {
     originalApplyLanguage(language);
     updateTreeLanguage();
     updateJsonStatusLanguage();
+    updateMonitorSidebarChrome();
     if (buddyAuditActive) renderAudit();
     if (buddyConversation) renderConversation(!getStreamPaused());
     try {
