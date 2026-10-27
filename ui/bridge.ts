@@ -104,8 +104,25 @@ const monitorChromeStyle = document.createElement("style");
 monitorChromeStyle.id = "buddy-monitor-chrome";
 monitorChromeStyle.textContent = `
   .monitor-stats { display: none !important; }
+  .monitor-toolbar > .tool-left { grid-column: 1; }
+  .monitor-toolbar > .tool-right { grid-column: 3; }
+  .monitor-toolbar > .monitor-mode {
+    grid-column: 2;
+    justify-self: center;
+    margin-left: 0;
+  }
 `;
 document.head.appendChild(monitorChromeStyle);
+
+function centerMonitorModeSwitch(): void {
+  const toolbar = document.querySelector(".monitor-toolbar");
+  const mode = toolbar?.querySelector(".monitor-mode");
+  const right = toolbar?.querySelector(".tool-right");
+  if (!toolbar || !mode || !right || mode.parentElement === toolbar) return;
+  toolbar.insertBefore(mode, right);
+}
+
+centerMonitorModeSwitch();
 
 const splitterStyle = document.createElement("style");
 splitterStyle.id = "buddy-splitter-styles";
