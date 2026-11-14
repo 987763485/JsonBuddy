@@ -1,2 +1,8 @@
 example
 .DS_Store
+node_modules/
+dist/
+ui/index.html
+src-tauri/target/
+src-tauri/gen/
+*.log
